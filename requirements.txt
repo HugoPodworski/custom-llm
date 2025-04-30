@@ -1,0 +1,6 @@
+fastapi
+openai
+starlette
+uvicorn
+python-dotenv
+mangum
