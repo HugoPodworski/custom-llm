@@ -126,8 +126,10 @@ async def chat_proxy(request: Request):
                 json_data = chunk.model_dump_json()
                 yield f"data: {json_data}\n\n"
 
-        total_time = time.time() - start_time
-        print(f"OPERATIONS: {total_time} - {captured_ttft[0]} - {trieve_speed}")
+            total_time = time.time() - start_time
+            operations_time = total_time - captured_ttft[0] - trieve_speed
+            print(f"OPERATIONS: {operations_time:.3f} seconds")
+
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
