@@ -78,10 +78,13 @@ def get_recent_messages(messages):
     return f"User: {user_content}\nAssistant: {assistant_content}"
 
 def system_prompt_inject(trieve_response, messages):
-    """Inject Trieve response into the system prompt."""
-    system_prompt = messages[0]['content']
-    system_prompt = system_prompt + "\n\n" + f"Relevant context+guidelines:\n{trieve_response}"
-    return messages[0].update({'content': system_prompt})
+    """Append Knowledge Base Results into the system prompt of the messages and return the updated list."""
+    # Only modify if the first message is the system prompt
+    if not messages or messages[0].get('role') != 'system':
+        return messages
+    # Append Knowledge Base Results to the system prompt
+    messages[0]['content'] += f"\n\nRelevant context+guidelines:\n{trieve_response}"
+    return messages
 
 @app.post("/chat/completions")
 async def chat_proxy(request: Request):
@@ -97,11 +100,8 @@ async def chat_proxy(request: Request):
         trieve_query = get_recent_messages(payload['messages'])
 
         trieve_response = await search_trieve(trieve_query)
-
-        messages = system_prompt_inject(trieve_response, payload['messages'])
-
-        payload['messages'] = messages
-
+        # Inject the Knowledge Base Results via helper
+        payload['messages'] = system_prompt_inject(trieve_response, payload.get('messages', [])) or payload.get('messages', [])
         print(payload['messages'])
 
         # Create the streaming completion
