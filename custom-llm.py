@@ -121,14 +121,13 @@ async def chat_proxy(request: Request):
                     ttft = time.time() - stream_start
                     captured_ttft[0] = ttft
                     print(f"TTFT: {ttft:.3f} seconds")
+                    total_time = time.time() - start_time
+                    operations_time = total_time - ttft - trieve_speed
+                    print(f"OPERATIONS: {operations_time:.3f} seconds")
                     first_token = False
                 # Serialize the full chunk as JSON
                 json_data = chunk.model_dump_json()
                 yield f"data: {json_data}\n\n"
-
-            total_time = time.time() - start_time
-            operations_time = total_time - captured_ttft[0] - trieve_speed
-            print(f"OPERATIONS: {operations_time:.3f} seconds")
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
