@@ -99,27 +99,34 @@ async def chat_proxy(request: Request):
         
         trieve_query = get_recent_messages(payload['messages'])
 
+        trieve_time = time.time()
         trieve_response = await search_trieve(trieve_query)
+        trieve_speed = time.time() - trieve_time
+        print(f"TRIEVE: {trieve_speed:.3f} seconds")
         # Inject the Knowledge Base Results via helper
         payload['messages'] = system_prompt_inject(trieve_response, payload.get('messages', [])) or payload.get('messages', [])
 
         # Create the streaming completion
+        stream_time = time.time()
         stream = await client.chat.completions.create(**payload)
         
+        ttft = []
         async def event_stream():
             first_token = True
             async for chunk in stream:
                 # Log TTFT on first chunk
                 if first_token:
                     end_time = time.time()
-                    ttft = end_time - start_time
+                    ttft = end_time - stream_time
+                    ttft.append(ttft)
                     print(f"TTFT: {ttft:.3f} seconds")
                     first_token = False
                 # Serialize the full chunk as JSON
                 json_data = chunk.model_dump_json()
                 yield f"data: {json_data}\n\n"
 
-            
+        total_time = time.time() - start_time
+        print(f"OPERATIONS: {total_time} - {ttft} - {trieve_speed}")
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")

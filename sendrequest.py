@@ -23,16 +23,25 @@ def send_chat_request(message, model="llama-3.3-70b-versatile"):
     full_response = ""
     
     for event in client.events():
+        # End of stream
         if event.data == "[DONE]":
             break
-        
         try:
-            chunk_data = json.loads(event.data)
-            content = chunk_data.get("content", "")
-            full_response += content
-            print(content, end="", flush=True)
-        except json.JSONDecodeError:
-            print(f"Error parsing JSON: {event.data}")
+            # Parse the JSON chunk
+            data = json.loads(event.data)
+            # Extract the delta content token
+            choice = data.get("choices", [{}])[0]
+            delta = choice.get("delta", {})
+            token = delta.get("content")
+            # Skip null or empty tokens
+            if not token:
+                continue
+            # Append and print only the content
+            full_response += token
+            print(token, end="", flush=True)
+        except (json.JSONDecodeError, KeyError):
+            # Skip any invalid or non-content events
+            continue
     
     print("\n\nFull response:", full_response)
     return full_response
