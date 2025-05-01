@@ -26,26 +26,33 @@ client = AsyncOpenAI(
     base_url="https://api.groq.com/openai/v1"
 )
 
-async def search_trieve(query: str) -> str:
-    """Call Trieve.ai chunk search API and return formatted context+guidelines."""
+async def search_trieve(query):
     api_key = os.getenv("TRIEVE_API_KEY")
     dataset_id = os.getenv("TRIEVE_DATASET_ID")
     if not api_key or not dataset_id:
         raise RuntimeError("Missing Trieve API credentials or dataset ID")
-
-    url = "https://api.trieve.ai/api/chunk/search"
-    headers = {
+    async with httpx.AsyncClient() as client:
+        url = "https://api.trieve.ai/api/chunk/search"
+        
+        headers = {
         "Authorization": api_key,
         "TR-Dataset": dataset_id,
         "Content-Type": "application/json",
         "X-API-Version": "V2",
     }
-    payload = {"query": query, "search_type": "bm25", "page_size": 5}
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-
+        
+        data = {
+            "query": query,
+            "search_type": "bm25",
+            "content_only": False,
+            "get_total_pages": True,
+            "page_size": 5,
+            "slim_chunks": False,
+            "sort_options": {}
+        }
+        
+        response = await client.post(url, headers=headers, json=data)        
+        
         lines = []
         for chunk in response.json().get('chunks', []):
             scenario = json.loads(chunk['chunk']['chunk_html'])
@@ -53,10 +60,10 @@ async def search_trieve(query: str) -> str:
             guidelines = scenario.get('responseGuidelines', '').strip()
             if context or guidelines:
                 lines.append(f"- {context} {guidelines}".strip())
-
+        
         if not lines:
             return "No relevant results found."
-
+        
         return "\n".join(lines)
 
 def get_recent_messages(messages):
@@ -123,7 +130,7 @@ async def chat_proxy(request: Request):
                     print(f"TTFT: {ttft:.3f} seconds")
                     total_time = time.time() - start_time
                     operations_time = total_time - ttft - trieve_speed
-                    print(f"OPERATIONS: {operations_time:.3f} seconds")
+                    print(f"OPERATIONS: {operations_time:.8f} seconds")
                     first_token = False
                 # Serialize the full chunk as JSON
                 json_data = chunk.model_dump_json()
