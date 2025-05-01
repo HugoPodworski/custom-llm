@@ -109,13 +109,16 @@ async def chat_proxy(request: Request):
         async def event_stream():
             first_token = True
             async for chunk in stream:
+                # Log TTFT on first chunk
                 if first_token:
                     end_time = time.time()
                     ttft = end_time - start_time
                     print(f"TTFT: {ttft:.3f} seconds")
                     first_token = False
-                # Stream chunk back to client
-                yield f"data: {json.dumps({chunk})}\n\n"
+                # Serialize the full chunk as JSON
+                json_data = chunk.model_dump_json()
+                yield f"data: {json_data}\n\n"
+
             
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
