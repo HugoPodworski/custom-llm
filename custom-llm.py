@@ -107,18 +107,19 @@ async def chat_proxy(request: Request):
         payload['messages'] = system_prompt_inject(trieve_response, payload.get('messages', [])) or payload.get('messages', [])
 
         # Create the streaming completion
-        stream_time = time.time()
+        stream_start = time.time()
         stream = await client.chat.completions.create(**payload)
         
-        ttft = []
+        # Use a list to capture the ttft value
+        captured_ttft = [None]
+        
         async def event_stream():
             first_token = True
             async for chunk in stream:
                 # Log TTFT on first chunk
                 if first_token:
-                    end_time = time.time()
-                    ttft = end_time - stream_time
-                    ttft.append(ttft)
+                    ttft = time.time() - stream_start
+                    captured_ttft[0] = ttft
                     print(f"TTFT: {ttft:.3f} seconds")
                     first_token = False
                 # Serialize the full chunk as JSON
@@ -126,7 +127,7 @@ async def chat_proxy(request: Request):
                 yield f"data: {json_data}\n\n"
 
         total_time = time.time() - start_time
-        print(f"OPERATIONS: {total_time} - {ttft} - {trieve_speed}")
+        print(f"OPERATIONS: {total_time} - {captured_ttft[0]} - {trieve_speed}")
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")

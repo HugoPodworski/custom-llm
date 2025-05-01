@@ -1,6 +1,7 @@
 import requests
 import json
 import sseclient
+import time
 
 API_URL = "https://custom-llm-8dod.onrender.com/chat/completions"
 
@@ -49,3 +50,6 @@ def send_chat_request(message, model="llama-3.3-70b-versatile"):
 if __name__ == "__main__":
     user_message = input("Enter your message: ")
     send_chat_request(user_message)
+
+    ttft = time.time() - stream_time
+    print(f"TTFT: {ttft:.3f} seconds")
