@@ -110,17 +110,13 @@ async def chat_proxy(request: Request):
         async def event_stream():
             first_token = True
             async for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    if first_token:
-                        end_time = time.time()
-                        ttft = end_time - start_time
-                        print(f"TTFT: {ttft:.3f} seconds")
-                        first_token = False
-                    # Emit each piece as its own SSE
-                    yield f"data: {json.dumps({'content': delta})}\n\n"
-            # Signal done
-            yield "data: [DONE]\n\n"
+                if first_token:
+                    end_time = time.time()
+                    ttft = end_time - start_time
+                    print(f"TTFT: {ttft:.3f} seconds")
+                    first_token = False
+                # Stream chunk back to client
+                yield f"data: {json.dumps({chunk})}\n\n"
             
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
