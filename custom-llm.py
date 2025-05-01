@@ -102,7 +102,6 @@ async def chat_proxy(request: Request):
         trieve_response = await search_trieve(trieve_query)
         # Inject the Knowledge Base Results via helper
         payload['messages'] = system_prompt_inject(trieve_response, payload.get('messages', [])) or payload.get('messages', [])
-        print(payload['messages'])
 
         # Create the streaming completion
         stream = await client.chat.completions.create(**payload)
