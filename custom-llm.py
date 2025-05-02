@@ -104,14 +104,14 @@ async def chat_proxy(request: Request):
             if key in payload:
                 del payload[key]
         
-        trieve_query = get_recent_messages(payload['messages'])
+        # trieve_query = get_recent_messages(payload['messages'])
 
-        trieve_time = time.time()
-        trieve_response = await search_trieve(trieve_query)
-        trieve_speed = time.time() - trieve_time
-        print(f"TRIEVE: {trieve_speed:.3f} seconds")
-        # Inject the Knowledge Base Results via helper
-        payload['messages'] = system_prompt_inject(trieve_response, payload.get('messages', [])) or payload.get('messages', [])
+        # trieve_time = time.time()
+        # trieve_response = await search_trieve(trieve_query)
+        # trieve_speed = time.time() - trieve_time
+        # print(f"TRIEVE: {trieve_speed:.3f} seconds")
+        # # Inject the Knowledge Base Results via helper
+        # payload['messages'] = system_prompt_inject(trieve_response, payload.get('messages', [])) or payload.get('messages', [])
 
         # Create the streaming completion
         stream_start = time.time()
@@ -129,8 +129,8 @@ async def chat_proxy(request: Request):
                     captured_ttft[0] = ttft
                     print(f"TTFT: {ttft:.3f} seconds")
                     total_time = time.time() - start_time
-                    operations_time = total_time - ttft - trieve_speed
-                    print(f"OPERATIONS: {operations_time:.8f} seconds")
+                    # operations_time = total_time - ttft - trieve_speed
+                    # print(f"OPERATIONS: {operations_time:.8f} seconds")
                     first_token = False
                 # Serialize the full chunk as JSON
                 json_data = chunk.model_dump_json()
