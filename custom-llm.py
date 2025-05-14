@@ -95,6 +95,7 @@ async def chat_proxy(request: Request):
     try:
         start_time = time.time()
         payload = await request.json()
+        print(payload)
         keys_to_remove = ['call', 'metadata', 'activeAssistant', 'credentials', 'toolDefinitionsExcluded', 'customer', 'phoneNumber', 'assistant', 'timestamp']
         for key in keys_to_remove:
             if key in payload:
