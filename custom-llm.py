@@ -22,7 +22,7 @@ app.add_middleware(
 )
 
 client = AsyncOpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
+    api_key=os.getenv("GROQ_API_KEY", base_url="https://api.groq.com/openai/v1")
 )
 
 async def search_trieve(query):
