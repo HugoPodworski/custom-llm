@@ -105,6 +105,7 @@ async def chat_proxy(request: Request):
 
         trieve_time = time.time()
         trieve_response = await search_trieve(trieve_query)
+        print(trieve_response)
         trieve_speed = time.time() - trieve_time
         print(f"TRIEVE: {trieve_speed:.3f} seconds")
         # Inject the Knowledge Base Results via helper
