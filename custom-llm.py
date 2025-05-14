@@ -22,8 +22,7 @@ app.add_middleware(
 )
 
 client = AsyncOpenAI(
-    api_key=os.getenv("GROQ_API_KEY"),
-    base_url="https://api.groq.com/openai/v1"
+    api_key=os.getenv("OPENAI_API_KEY")
 )
 
 async def search_trieve(query):
@@ -105,14 +104,14 @@ async def chat_proxy(request: Request):
             if key in payload:
                 del payload[key]
         
-        # trieve_query = get_recent_messages(payload['messages'])
+        trieve_query = get_recent_messages(payload['messages'])
 
-        # trieve_time = time.time()
-        # trieve_response = await search_trieve(trieve_query)
-        # trieve_speed = time.time() - trieve_time
-        # print(f"TRIEVE: {trieve_speed:.3f} seconds")
-        # # Inject the Knowledge Base Results via helper
-        # payload['messages'] = system_prompt_inject(trieve_response, payload.get('messages', [])) or payload.get('messages', [])
+        trieve_time = time.time()
+        trieve_response = await search_trieve(trieve_query)
+        trieve_speed = time.time() - trieve_time
+        print(f"TRIEVE: {trieve_speed:.3f} seconds")
+        # Inject the Knowledge Base Results via helper
+        payload['messages'] = system_prompt_inject(trieve_response, payload.get('messages', [])) or payload.get('messages', [])
 
         # Create the streaming completion
         stream_start = time.time()
