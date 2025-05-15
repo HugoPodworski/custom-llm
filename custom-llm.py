@@ -21,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = AsyncOpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1")
+client = AsyncOpenAI(api_key=os.getenv("GEMINI_KEY"), base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
 
 async def search_trieve(query):
     api_key = os.getenv("TRIEVE_API_KEY")
