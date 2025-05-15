@@ -21,7 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = AsyncOpenAI(api_key=os.getenv("GEMINI_KEY"), base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 async def search_trieve(query):
     api_key = os.getenv("TRIEVE_API_KEY")
