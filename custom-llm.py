@@ -90,6 +90,14 @@ def system_prompt_inject(trieve_response, messages):
     messages[0]['content'] += f"\n\nRelevant context+guidelines:\n{trieve_response}"
     return messages
 
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint.
+    Returns 200 OK if the service is running.
+    """
+    return {"status": "ok"}
+
 @app.post("/chat/completions")
 async def chat_proxy(request: Request):
     try:
