@@ -26,9 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = AsyncOpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+client = AsyncOpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1")
 
 # Qdrant and Embedding Model Configuration
 QDRANT_URL = os.getenv("QDRANT_URL")
@@ -205,13 +203,19 @@ def system_prompt_inject(trieve_response, messages):
     messages[0]['content'] += f"\n\nRelevant context+guidelines:\n{trieve_response}"
     return messages
 
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint.
+    Returns 200 OK if the service is running.
+    """
+    return {"status": "ok"}
+
 @app.post("/chat/completions")
 async def chat_proxy(request: Request):
     try:
         start_time = time.time()
         payload = await request.json()
-        print(payload)
-
         keys_to_remove = ['call', 'metadata', 'activeAssistant', 'credentials', 'toolDefinitionsExcluded', 'customer', 'phoneNumber', 'assistant', 'timestamp']
         for key in keys_to_remove:
             if key in payload:
@@ -221,6 +225,7 @@ async def chat_proxy(request: Request):
 
         trieve_time = time.time()
         trieve_response = await search_trieve(trieve_query)
+        print(trieve_response)
         trieve_speed = time.time() - trieve_time
         print(f"TRIEVE: {trieve_speed:.3f} seconds")
         # Inject the Knowledge Base Results via helper
@@ -228,6 +233,7 @@ async def chat_proxy(request: Request):
 
         # Create the streaming completion
         stream_start = time.time()
+        print(payload)
         stream = await client.chat.completions.create(**payload)
         
         # Use a list to capture the ttft value
