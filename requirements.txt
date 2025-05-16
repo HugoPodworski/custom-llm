@@ -8,3 +8,4 @@ gunicorn
 httpx
 qdrant-client
 fastembed
+sentence_transformers
