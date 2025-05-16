@@ -1,10 +1,14 @@
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+torch==2.2.0+cpu
+numpy<2.0
+
+# Your other requirements:
 fastapi
 openai
 starlette
 uvicorn
 python-dotenv
-mangum
-gunicorn
 httpx
 qdrant-client
-fastembed
+sentence_transformers
