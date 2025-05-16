@@ -5,3 +5,6 @@ uvicorn
 python-dotenv
 mangum
 gunicorn
+httpx
+qdrant-client
+fastembed
