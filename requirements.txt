@@ -1,5 +1,8 @@
 --index-url https://download.pytorch.org/whl/cpu
-torch==2.2.0+cpu # Or a compatible CPU version
+--extra-index-url https://pypi.org/simple
+torch==2.2.0+cpu
+
+# Your other requirements:
 fastapi
 openai
 starlette
