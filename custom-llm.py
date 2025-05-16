@@ -1,6 +1,9 @@
 import os
 import json
 import time
+
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
@@ -31,8 +34,8 @@ client = AsyncOpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.gr
 # Qdrant and Embedding Model Configuration
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-QDRANT_COLLECTION_NAME = "liv-scenarios"
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+QDRANT_COLLECTION_NAME = "liv-scenarios-2"
+EMBEDDING_MODEL_NAME = "static-retrieval-mrl-en-v1"
 
 print(f"Initializing embedding model: {EMBEDDING_MODEL_NAME}...")
 embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
@@ -289,6 +292,46 @@ async def search_qdrant_endpoint(search_request: SearchRequest): # Changed reque
     
     print(f"Returning {len(results)} scenarios from Qdrant.")
     return results
+
+@app.post("/trieve-search")
+async def trieve_search(request: Request): # request parameter is unused for this health check
+    """
+    Perform a health check on the Trieve API using httpx.
+    Note: This endpoint currently performs a health check.
+    """
+    try:
+        start_time = time.time()
+        
+        url = "https://api.trieve.ai/api/health"
+        print(f"Performing Trieve health check on URL: {url} using httpx")
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+        
+        # Raise an exception for bad status codes (4xx or 5xx)
+        response.raise_for_status()
+        
+        response_text = response.text
+        print(f"Trieve health check response: {response_text}")
+        
+        end_time = time.time()
+        print(f"Trieve health check processed in {end_time - start_time:.4f} seconds.")
+        
+        return {"trieve_health_status": "success", "response": response_text}
+
+    except httpx.HTTPStatusError as http_err:
+        # For httpx.HTTPStatusError, the response is http_err.response
+        print(f"Trieve health check HTTP error: {http_err} - Status: {http_err.response.status_code} - Response: {http_err.response.text}")
+        raise HTTPException(status_code=http_err.response.status_code, 
+                            detail=f"Trieve API health check failed: {str(http_err)} - {http_err.response.text}")
+    except httpx.RequestError as req_err:
+        # For other httpx request errors (e.g., network issues)
+        print(f"Trieve health check request error: {req_err}")
+        raise HTTPException(status_code=503, # Service Unavailable
+                            detail=f"Trieve API health check request failed: {str(req_err)}")
+    except Exception as e:
+        print(f"Unexpected error in Trieve health check endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error during Trieve health check: {str(e)}")
 
 # Optional: Add a root endpoint if desired, similar to ragpipeline
 # @app.get("/")
