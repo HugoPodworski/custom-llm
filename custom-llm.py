@@ -9,7 +9,7 @@ from starlette.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import httpx
 from qdrant_client import QdrantClient
-from fastembed import TextEmbedding
+from sentence_transformers import SentenceTransformer
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
@@ -32,10 +32,10 @@ client = AsyncOpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.gr
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_COLLECTION_NAME = "liv-scenarios"
-EMBEDDING_MODEL_NAME = "BAAI/bge-small-en"
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 print(f"Initializing embedding model: {EMBEDDING_MODEL_NAME}...")
-embedding_model = TextEmbedding(model_name=EMBEDDING_MODEL_NAME, cache_dir=".")
+embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 print("Embedding model initialized.")
 
 qdrant_client = None
@@ -69,8 +69,8 @@ class ScenarioHit(BaseModel):
 # Helper functions for Qdrant search (adapted from ragpipeline.py)
 def embed_query_text(query_text: str) -> Optional[List[float]]:
     try:
-        # Assuming embedding_model is initialized globally as in ragpipeline.py
-        embedding = list(embedding_model.embed([query_text]))[0]
+        # Assuming embedding_model is initialized globally
+        embedding = embedding_model.encode([query_text])[0]
         return embedding.tolist()
     except Exception as e:
         print(f"Error embedding query '{query_text}': {e}")
