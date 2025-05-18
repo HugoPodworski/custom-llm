@@ -259,11 +259,6 @@ async def chat_proxy(request: Request):
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
         stream_start = time.time()
-        # Use json.dumps for pretty printing the payload to logs
-        try:
-            print(f"Payload to Groq: {json.dumps(payload, indent=2)}")
-        except Exception as dump_err:
-            print(f"Could not json.dumps payload for logging: {dump_err}. Payload: {payload}")
 
         stream = await client.chat.completions.create(**payload)
         
@@ -274,20 +269,17 @@ async def chat_proxy(request: Request):
             try:
                 async for chunk in stream:
                     if first_token:
-                        ttft = time.time() - stream_start
+                        ttft = time.time() - start_time
                         captured_ttft[0] = ttft
                         print(f"TTFT: {ttft:.3f} seconds")
                         first_token = False
                     json_data = chunk.model_dump_json()
-                    yield f"data: {json_data}\n\n" # Corrected SSE format
+                    yield f"data: {json_data}\n\n"
                 
                 if first_token: # This means the loop `async for chunk in stream` did not run even once
                     print("No chunks received from Groq stream. The stream might have been empty or an issue occurred.")
             except Exception as ex_stream:
                 print(f"Error during Groq stream processing: {ex_stream}")
-                # Optionally, you could yield an error to the client if your SSE client handles it:
-                # error_payload = json.dumps({"error": "Error during streaming", "detail": str(ex_stream)})
-                # yield f"data: {error_payload}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
