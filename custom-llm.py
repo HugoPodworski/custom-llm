@@ -225,11 +225,13 @@ async def chat_proxy(request: Request):
                 del payload[key]
         
         rag_query = get_recent_messages(payload.get('messages', []))
+        print(f"Generated RAG query: {rag_query}") # Log the RAG query
 
         rag_search_start_time = time.time()
         
         qdrant_results = []
-        if qdrant_client: # Check if Qdrant client is initialized
+        if qdrant_client:
+            print(f"Qdrant client found, proceeding with search for query: '{rag_query}'")
             qdrant_results = await run_in_threadpool(
                 search_scenarios_in_qdrant_sync,
                 query_text=rag_query,
@@ -246,9 +248,9 @@ async def chat_proxy(request: Request):
                 if context or guidelines:
                     formatted_rag_results.append(f"- {context} {guidelines}".strip())
         
-        rag_response_string = "\\n".join(formatted_rag_results)
-        if not rag_response_string: # if empty or only whitespace after join
-            rag_response_string = "No relevant context found from knowledge base." # More generic message
+        rag_response_string = "\n".join(formatted_rag_results)
+        if not rag_response_string: 
+            rag_response_string = "No relevant context found from knowledge base."
 
         print(f"Formatted RAG (Qdrant) results: {rag_response_string}")
         rag_search_speed = time.time() - rag_search_start_time
@@ -257,28 +259,41 @@ async def chat_proxy(request: Request):
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
         stream_start = time.time()
-        print(payload) # Print payload after modification
+        # Use json.dumps for pretty printing the payload to logs
+        try:
+            print(f"Payload to Groq: {json.dumps(payload, indent=2)}")
+        except Exception as dump_err:
+            print(f"Could not json.dumps payload for logging: {dump_err}. Payload: {payload}")
+
         stream = await client.chat.completions.create(**payload)
         
         captured_ttft = [None]
         
         async def event_stream():
             first_token = True
-            async for chunk in stream:
-                if first_token:
-                    ttft = time.time() - stream_start
-                    captured_ttft[0] = ttft
-                    print(f"TTFT: {ttft:.3f} seconds")
-                    # total_time = time.time() - start_time # This can be calculated at the end if needed
-                    # operations_time = total_time - ttft - rag_search_speed
-                    # print(f"OPERATIONS: {operations_time:.8f} seconds")
-                    first_token = False
-                json_data = chunk.model_dump_json()
-                yield f"data: {json_data}\\n\\n"
+            try:
+                async for chunk in stream:
+                    if first_token:
+                        ttft = time.time() - stream_start
+                        captured_ttft[0] = ttft
+                        print(f"TTFT: {ttft:.3f} seconds")
+                        first_token = False
+                    json_data = chunk.model_dump_json()
+                    yield f"data: {json_data}\n\n" # Corrected SSE format
+                
+                if first_token: # This means the loop `async for chunk in stream` did not run even once
+                    print("No chunks received from Groq stream. The stream might have been empty or an issue occurred.")
+            except Exception as ex_stream:
+                print(f"Error during Groq stream processing: {ex_stream}")
+                # Optionally, you could yield an error to the client if your SSE client handles it:
+                # error_payload = json.dumps({"error": "Error during streaming", "detail": str(ex_stream)})
+                # yield f"data: {error_payload}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
-        print(f"Error in /chat/completions: {str(e)}") # Log the error
+        # Log the full traceback for better debugging
+        import traceback
+        print(f"Error in /chat/completions endpoint: {str(e)}\nTraceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 @app.post("/search", response_model=List[ScenarioHit])
@@ -351,12 +366,3 @@ async def trieve_search(request: Request): # request parameter is unused for thi
     except Exception as e:
         print(f"Unexpected error in Trieve health check endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error during Trieve health check: {str(e)}")
-
-# Optional: Add a root endpoint if desired, similar to ragpipeline
-# @app.get("/")
-# async def root():
-#     return {"message": "Custom LLM API with Trieve and Qdrant search is running."}
-
-# Note: The __main__ block for uvicorn.run is not included here as custom-llm.py
-# might be run differently (e.g. via an external ASGI server like uvicorn directly).
-# If you need it, it can be added similarly to ragpipeline.py.
