@@ -29,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = AsyncOpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1")
+client = AsyncOpenAI(api_key=os.getenv("COHERE_API_KEY"), base_url="https://api.cohere.ai/compatibility/v1")
 
 # Qdrant and Embedding Model Configuration
 QDRANT_URL = os.getenv("QDRANT_URL")
