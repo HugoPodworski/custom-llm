@@ -224,42 +224,61 @@ async def chat_proxy(request: Request):
             if key in payload:
                 del payload[key]
         
-        trieve_query = get_recent_messages(payload['messages'])
+        rag_query = get_recent_messages(payload.get('messages', []))
 
-        trieve_time = time.time()
-        trieve_response = await search_trieve(trieve_query)
-        print(trieve_response)
-        trieve_speed = time.time() - trieve_time
-        print(f"TRIEVE: {trieve_speed:.3f} seconds")
-        # Inject the Knowledge Base Results via helper
-        payload['messages'] = system_prompt_inject(trieve_response, payload.get('messages', [])) or payload.get('messages', [])
+        rag_search_start_time = time.time()
+        
+        qdrant_results = []
+        if qdrant_client: # Check if Qdrant client is initialized
+            qdrant_results = await run_in_threadpool(
+                search_scenarios_in_qdrant_sync,
+                query_text=rag_query,
+                top_k=5 
+            )
+        else:
+            print("Qdrant client not initialized. Skipping Qdrant search for /chat/completions.")
 
-        # Create the streaming completion
+        formatted_rag_results = []
+        if qdrant_results:
+            for hit in qdrant_results:
+                context = hit.get("payload", {}).get("context", "").strip()
+                guidelines = hit.get("payload", {}).get("responseGuidelines", "").strip()
+                if context or guidelines:
+                    formatted_rag_results.append(f"- {context} {guidelines}".strip())
+        
+        rag_response_string = "\\n".join(formatted_rag_results)
+        if not rag_response_string: # if empty or only whitespace after join
+            rag_response_string = "No relevant context found from knowledge base." # More generic message
+
+        print(f"Formatted RAG (Qdrant) results: {rag_response_string}")
+        rag_search_speed = time.time() - rag_search_start_time
+        print(f"RAG Search (Qdrant) time: {rag_search_speed:.3f} seconds")
+        
+        payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
+
         stream_start = time.time()
-        print(payload)
+        print(payload) # Print payload after modification
         stream = await client.chat.completions.create(**payload)
         
-        # Use a list to capture the ttft value
         captured_ttft = [None]
         
         async def event_stream():
             first_token = True
             async for chunk in stream:
-                # Log TTFT on first chunk
                 if first_token:
                     ttft = time.time() - stream_start
                     captured_ttft[0] = ttft
                     print(f"TTFT: {ttft:.3f} seconds")
-                    total_time = time.time() - start_time
-                    # operations_time = total_time - ttft - trieve_speed
+                    # total_time = time.time() - start_time # This can be calculated at the end if needed
+                    # operations_time = total_time - ttft - rag_search_speed
                     # print(f"OPERATIONS: {operations_time:.8f} seconds")
                     first_token = False
-                # Serialize the full chunk as JSON
                 json_data = chunk.model_dump_json()
-                yield f"data: {json_data}\n\n"
+                yield f"data: {json_data}\\n\\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as e:
+        print(f"Error in /chat/completions: {str(e)}") # Log the error
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 @app.post("/search", response_model=List[ScenarioHit])
