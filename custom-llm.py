@@ -258,8 +258,8 @@ async def chat_proxy(request: Request):
         
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
-        stream_start = time.time()
-
+        print(f"Payload: {payload}")
+        
         stream = await client.chat.completions.create(**payload)
         
         captured_ttft = [None]
