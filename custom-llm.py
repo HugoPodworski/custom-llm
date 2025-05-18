@@ -29,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = AsyncOpenAI(api_key=os.getenv("COHERE_API_KEY"), base_url="https://api.cohere.ai/compatibility/v1")
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Qdrant and Embedding Model Configuration
 QDRANT_URL = os.getenv("QDRANT_URL")
