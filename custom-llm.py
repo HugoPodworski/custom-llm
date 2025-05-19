@@ -59,6 +59,39 @@ if QDRANT_URL:
 else:
     print("QDRANT_URL environment variable not set. Qdrant client will not be initialized. Qdrant search functionality will be disabled.")
 
+MODEL_PRICES = {
+    "default": {"prompt": 0.0005 / 1000, "completion": 0.0015 / 1000},
+    "gpt-4.1-mini": {"prompt": 0.0004 / 1000, "completion": 0.0016 / 1000},
+    # Add more models and their pricing here
+}
+
+def calculate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Calculates the cost of an LLM request based on model, prompt tokens, and completion tokens."""
+    pricing_key = "default"  # Fallback to default pricing
+
+    # Find the most specific matching key
+    best_match_len = 0
+    for key in MODEL_PRICES:
+        if model_name.startswith(key) and key != "default":
+            if len(key) > best_match_len:
+                pricing_key = key
+                best_match_len = len(key)
+    
+    if best_match_len == 0 and model_name in MODEL_PRICES: # Exact match for a non-default key
+        pricing_key = model_name
+
+    prices = MODEL_PRICES.get(pricing_key)
+
+    if not prices: # Should ideally not happen if "default" is correctly set up
+        print(f"Warning: Pricing not found for model key '{pricing_key}' (original model: '{model_name}'). Using zero rates.")
+        return 0.0
+    
+    prompt_cost = prompt_tokens * prices["prompt"]
+    completion_cost = completion_tokens * prices["completion"]
+    total_cost = prompt_cost + completion_cost
+    # print(f"Cost calc: model='{model_name}', matched_key='{pricing_key}', p_tokens={prompt_tokens}, c_tokens={completion_tokens}, cost={total_cost}")
+    return total_cost
+
 # Pydantic models for /search endpoint (similar to ragpipeline.py)
 class SearchRequest(BaseModel):
     query_text: str
@@ -254,34 +287,74 @@ async def chat_proxy(request: Request):
 
         print(f"Formatted RAG (Qdrant) results: {rag_response_string}")
         rag_search_speed = time.time() - rag_search_start_time
-        print(f"RAG Search (Qdrant) time: {rag_search_speed:.3f} seconds")
+        print(f"Total RAG Time: {rag_search_speed:.3f} seconds")
         
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
-        print(f"Payload: {payload}")
+        # Ensure payload is printed before any streaming activity for this request
+        # print(f"Payload: {payload}") # This was moved up or ensure it's before this section if re-added
         
         stream = await client.chat.completions.create(**payload)
         
-        captured_ttft = [None]
+        # captured_ttft = [None] # Will be handled within logging_event_stream
         
-        async def event_stream():
-            first_token = True
+        async def logging_event_stream():
+            # Values for accumulating response and usage data
+            _prompt_tokens = 0
+            _completion_tokens = 0
+            _response_parts = []
+            _ttft_logged = False
+            # TTFT is calculated relative to start_time of the request
+            nonlocal start_time, payload # Ensure access to outer scope variables
+
             try:
                 async for chunk in stream:
-                    if first_token:
+                    if not _ttft_logged and chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                        # Log TTFT on first actual content chunk
                         ttft = time.time() - start_time
-                        captured_ttft[0] = ttft
+                        # captured_ttft[0] = ttft # Not strictly needed if only printing
                         print(f"TTFT: {ttft:.3f} seconds")
-                        first_token = False
+                        _ttft_logged = True
+                    
+                    if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                        _response_parts.append(chunk.choices[0].delta.content)
+                    
+                    # Usage is typically sent in the last chunk for OpenAI streams
+                    if chunk.usage:
+                        _prompt_tokens = chunk.usage.prompt_tokens
+                        _completion_tokens = chunk.usage.completion_tokens
+                    
                     json_data = chunk.model_dump_json()
                     yield f"data: {json_data}\n\n"
                 
-                if first_token: # This means the loop `async for chunk in stream` did not run even once
-                    print("No chunks received from Groq stream. The stream might have been empty or an issue occurred.")
-            except Exception as ex_stream:
-                print(f"Error during Groq stream processing: {ex_stream}")
+                # This part executes after the loop if stream completes normally
+                if not _ttft_logged: 
+                    # If stream was empty or had no content, TTFT wasn't logged.
+                    # You might log a "Time to empty response" or similar if needed.
+                    pass
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+            except Exception as ex_stream_processing: # Catch errors during stream processing itself
+                print(f"Error during OpenAI stream processing: {ex_stream_processing}")
+                # Optionally, re-raise or handle to ensure finally block still executes well
+                # For now, it will proceed to finally
+            finally:
+                # This block executes when the generator is closed (stream exhausted or client disconnect)
+                final_response = "".join(_response_parts)
+                print(f"Response: {final_response}")
+                
+                model_name = payload.get("model", "unknown_model")
+                
+                # Use the calculate_cost function defined earlier
+                cost = calculate_cost(model_name, _prompt_tokens, _completion_tokens)
+                
+                print(f"Prompt Tokens: {_prompt_tokens}")
+                print(f"Completion Tokens: {_completion_tokens}")
+                print(f"Cost: ${cost:.6f}")
+                
+                total_request_time = time.time() - start_time
+                print(f"Total Request Processing Time: {total_request_time:.3f} seconds")
+
+        return StreamingResponse(logging_event_stream(), media_type="text/event-stream")
     except Exception as e:
         # Log the full traceback for better debugging
         import traceback
