@@ -1,6 +1,7 @@
 import os
 import json
 import time
+from contextlib import asynccontextmanager
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
@@ -11,14 +12,63 @@ from openai import AsyncOpenAI
 from starlette.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import httpx
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from sentence_transformers import SentenceTransformer
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
 load_dotenv()
 
-app = FastAPI()
+# Qdrant and Embedding Model Configuration
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+QDRANT_COLLECTION_NAME = "liv-scenarios-2"
+EMBEDDING_MODEL_NAME = "static-retrieval-mrl-en-v1"
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print(f"Lifespan: Initializing embedding model: {EMBEDDING_MODEL_NAME}...")
+    app.state.embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    print("Lifespan: Embedding model initialized.")
+
+    app.state.qdrant_client = None
+    if QDRANT_URL:
+        qdrant_client_init_args = {
+            "url": QDRANT_URL,
+            "api_key": QDRANT_API_KEY,
+            "prefer_grpc": True,
+            "timeout": 10,
+            "grpc_options": [
+                ('grpc.keepalive_time_ms', 30000),
+                ('grpc.keepalive_timeout_ms', 10000),
+                ('grpc.keepalive_permit_without_calls', 1),
+                ('grpc.http2.min_time_between_pings_ms', 10000),
+                ('grpc.http2.max_pings_without_data', 0),
+            ]
+        }
+        try:
+            print(f"Lifespan: Initializing AsyncQdrantClient with args: {qdrant_client_init_args}")
+            app.state.qdrant_client = AsyncQdrantClient(**qdrant_client_init_args)
+            print("Lifespan: AsyncQdrantClient object created. Attempting warm-up call...")
+            # Warm-up call
+            await app.state.qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+            print(f"Lifespan: Successfully connected to collection '{QDRANT_COLLECTION_NAME}' (warm-up successful).")
+        except Exception as e:
+            print(f"Lifespan: Error initializing AsyncQdrantClient or during warm-up: {e}")
+            print("Lifespan: Please ensure Qdrant is running, accessible, the collection exists, and credentials are correct.")
+            app.state.qdrant_client = None 
+    else:
+        print("Lifespan: QDRANT_URL environment variable not set. Qdrant client will not be initialized.")
+    
+    yield
+    # Shutdown
+    if app.state.qdrant_client:
+        print("Lifespan: Closing Qdrant client...")
+        await app.state.qdrant_client.close()
+        print("Lifespan: Qdrant client closed.")
+
+app = FastAPI(lifespan=lifespan)
 
 # Add CORS middleware
 app.add_middleware(
@@ -31,34 +81,6 @@ app.add_middleware(
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Qdrant and Embedding Model Configuration
-QDRANT_URL = os.getenv("QDRANT_URL")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-QDRANT_COLLECTION_NAME = "liv-scenarios-2"
-EMBEDDING_MODEL_NAME = "static-retrieval-mrl-en-v1"
-
-print(f"Initializing embedding model: {EMBEDDING_MODEL_NAME}...")
-embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-print("Embedding model initialized.")
-
-qdrant_client = None
-if QDRANT_URL:
-    try:
-        print(f"Connecting to Qdrant at {QDRANT_URL}...")
-        qdrant_client = QdrantClient(
-            url=QDRANT_URL,
-            api_key=QDRANT_API_KEY,
-        )
-        print("Qdrant client initialized successfully.")
-        # Optional: Test connection (can be un-commented if needed)
-        # collection_info = qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-        # print(f"Successfully connected to collection '{QDRANT_COLLECTION_NAME}'. Status: {collection_info.status}")
-    except Exception as e:
-        print(f"Error initializing Qdrant client: {e}")
-        print("Please ensure Qdrant is running and accessible, and credentials are correct.")
-else:
-    print("QDRANT_URL environment variable not set. Qdrant client will not be initialized. Qdrant search functionality will be disabled.")
-
 MODEL_PRICES = {
     "default": {"prompt": 0.0005 / 1000, "completion": 0.0015 / 1000},
     "gpt-4.1-mini": {"prompt": 0.0004 / 1000, "completion": 0.0016 / 1000},
@@ -67,9 +89,8 @@ MODEL_PRICES = {
 
 def calculate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
     """Calculates the cost of an LLM request based on model, prompt tokens, and completion tokens."""
-    pricing_key = "default"  # Fallback to default pricing
+    pricing_key = "default"
 
-    # Find the most specific matching key
     best_match_len = 0
     for key in MODEL_PRICES:
         if model_name.startswith(key) and key != "default":
@@ -77,22 +98,21 @@ def calculate_cost(model_name: str, prompt_tokens: int, completion_tokens: int) 
                 pricing_key = key
                 best_match_len = len(key)
     
-    if best_match_len == 0 and model_name in MODEL_PRICES: # Exact match for a non-default key
+    if best_match_len == 0 and model_name in MODEL_PRICES: 
         pricing_key = model_name
 
     prices = MODEL_PRICES.get(pricing_key)
 
-    if not prices: # Should ideally not happen if "default" is correctly set up
+    if not prices: 
         print(f"Warning: Pricing not found for model key '{pricing_key}' (original model: '{model_name}'). Using zero rates.")
         return 0.0
     
     prompt_cost = prompt_tokens * prices["prompt"]
     completion_cost = completion_tokens * prices["completion"]
     total_cost = prompt_cost + completion_cost
-    # print(f"Cost calc: model='{model_name}', matched_key='{pricing_key}', p_tokens={prompt_tokens}, c_tokens={completion_tokens}, cost={total_cost}")
     return total_cost
 
-# Pydantic models for /search endpoint (similar to ragpipeline.py)
+# Pydantic models for /search endpoint
 class SearchRequest(BaseModel):
     query_text: str
     top_k: Optional[int] = 5
@@ -102,24 +122,31 @@ class ScenarioHit(BaseModel):
     score: float
     payload: Dict[str, Any]
 
-# Helper functions for Qdrant search (adapted from ragpipeline.py)
-def embed_query_text(query_text: str) -> Optional[List[float]]:
+# Helper function for embedding text
+def embed_query_text(query_text: str, embedding_model_instance: SentenceTransformer) -> Optional[List[float]]:
     try:
-        # Assuming embedding_model is initialized globally
-        embedding = embedding_model.encode([query_text])[0]
+        embedding = embedding_model_instance.encode([query_text])[0]
         return embedding.tolist()
     except Exception as e:
         print(f"Error embedding query '{query_text}': {e}")
         return None
 
-def search_scenarios_in_qdrant_sync(query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
-    global qdrant_client # Ensure we're using the global client
-    if not qdrant_client:
-        print("Qdrant client not initialized. Skipping Qdrant search.")
+# Asynchronous Qdrant search function
+async def search_scenarios_in_qdrant_async(
+    qdrant_client_instance: AsyncQdrantClient, 
+    embedding_model_instance: SentenceTransformer,
+    query_text: str, 
+    top_k: int = 5
+) -> List[Dict[str, Any]]:
+    if not qdrant_client_instance:
+        print("AsyncQdrantClient not available (from app.state). Skipping Qdrant search.")
+        return []
+    if not embedding_model_instance:
+        print("Embedding model not available (from app.state). Skipping Qdrant search.")
         return []
 
     t_embedding_start = time.time()
-    query_embedding = embed_query_text(query_text)
+    query_embedding = await run_in_threadpool(embed_query_text, query_text, embedding_model_instance)
     t_embedding_end = time.time()
     print(f"Embedding Time: {t_embedding_end - t_embedding_start:.4f} seconds")
 
@@ -129,29 +156,21 @@ def search_scenarios_in_qdrant_sync(query_text: str, top_k: int = 5) -> List[Dic
     
     t_qdrant_call_start = time.time()
     try:
-        search_result = qdrant_client.query_points(
+        search_result = await qdrant_client_instance.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
-            query=query_embedding,
+            query_vector=query_embedding,
             limit=top_k,
             with_payload=True
         )
         
         actual_hits = []
-        # Simplified hit extraction, assuming search_result is a list of ScoredPoint-like objects
-        # or an object with a .points attribute that is a list of ScoredPoint-like objects.
-        # This part might need adjustment based on the exact version/behavior of qdrant_client
-        if hasattr(search_result, 'points'):
-             actual_hits = search_result.points
-        elif isinstance(search_result, list): # If search_result is directly a list of hits
+        if isinstance(search_result, list): # Async client's query_points directly returns a list of ScoredPoint
             actual_hits = search_result
-        elif isinstance(search_result, tuple) and len(search_result) > 0 and hasattr(search_result[0], 'points'): # As in original ragpipeline
-            actual_hits = search_result[0].points
-        elif isinstance(search_result, tuple) and len(search_result) > 0 and isinstance(search_result[0], list): # As in original ragpipeline
-            actual_hits = search_result[0]
+        elif hasattr(search_result, 'points'): # Fallback, though async client usually returns list
+             actual_hits = search_result.points
         else:
-            print(f"Warning: Unexpected structure from query_points response: {type(search_result)}")
+            print(f"Warning: Unexpected structure from async query_points response: {type(search_result)}")
             actual_hits = []
-
 
         results_as_dicts = []
         for hit in actual_hits: 
@@ -162,13 +181,12 @@ def search_scenarios_in_qdrant_sync(query_text: str, top_k: int = 5) -> List[Dic
             })
         return results_as_dicts
     except Exception as e:
-        print(f"Error searching Qdrant: {e}")
+        print(f"Error searching Qdrant with async client: {e}")
         return []
     finally:
         t_qdrant_call_end = time.time()
-        # Ensure t_qdrant_call_start was defined
-        if 't_qdrant_call_start' in locals() or 't_qdrant_call_start' in globals():
-            print(f"Qdrant Search Time: {t_qdrant_call_end - t_qdrant_call_start:.4f} seconds")
+        # Ensure t_qdrant_call_start was defined (it should be if try block was entered)
+        print(f"Qdrant Async Search Time: {t_qdrant_call_end - t_qdrant_call_start:.4f} seconds")
 
 async def search_trieve(query):
     api_key = os.getenv("TRIEVE_API_KEY")
@@ -211,12 +229,10 @@ async def search_trieve(query):
         return "\n".join(lines)
 
 def get_recent_messages(messages):
-    # Get the content of the most recent user and assistant messages, ignoring any tool/function calls
     assistant_content = None
     user_content = None
     for message in reversed(messages):
         role = message.get('role')
-        # skip tool or function call messages
         if role in ('tool', 'function') or message.get('tool_call'):
             continue
         content = message.get('content')
@@ -229,20 +245,13 @@ def get_recent_messages(messages):
     return f"User: {user_content}\nAssistant: {assistant_content}"
 
 def system_prompt_inject(trieve_response, messages):
-    """Append Knowledge Base Results into the system prompt of the messages and return the updated list."""
-    # Only modify if the first message is the system prompt
     if not messages or messages[0].get('role') != 'system':
         return messages
-    # Append Knowledge Base Results to the system prompt
     messages[0]['content'] += f"\n\nRelevant context+guidelines:\n{trieve_response}"
     return messages
 
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint.
-    Returns 200 OK if the service is running.
-    """
     return {"status": "ok"}
 
 @app.post("/chat/completions")
@@ -256,22 +265,23 @@ async def chat_proxy(request: Request):
                 del payload[key]
         
         rag_query = get_recent_messages(payload.get('messages', []))
-        # Remove verbose logging
-        # print(f"Generated RAG query: {rag_query}")
-
+        
         rag_search_start_time = time.time()
         
         qdrant_results = []
-        if qdrant_client:
-            # Remove verbose logging
-            # print(f"Qdrant client found, proceeding with search for query: '{rag_query}'")
-            qdrant_results = await run_in_threadpool(
-                search_scenarios_in_qdrant_sync,
+        # Access client and model from app.state via the request object
+        current_qdrant_client = request.app.state.qdrant_client
+        current_embedding_model = request.app.state.embedding_model
+
+        if current_qdrant_client and current_embedding_model:
+            qdrant_results = await search_scenarios_in_qdrant_async(
+                qdrant_client_instance=current_qdrant_client,
+                embedding_model_instance=current_embedding_model,
                 query_text=rag_query,
                 top_k=5 
             )
         else:
-            print("Qdrant client not initialized. Skipping Qdrant search.")
+            print("Qdrant client or embedding model not initialized from app.state. Skipping Qdrant search in /chat/completions.")
 
         formatted_rag_results = []
         if qdrant_results:
@@ -290,7 +300,6 @@ async def chat_proxy(request: Request):
         
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
-        # Print payload - keep for debugging but show shortened version
         truncated_payload = {**payload}
         if 'messages' in truncated_payload:
             messages_preview = []
@@ -301,56 +310,44 @@ async def chat_proxy(request: Request):
             truncated_payload['messages'] = messages_preview
         print(f"Payload: {truncated_payload}")
         
-        # Track the model being used for cost calculation
         model_name = payload.get("model", "default")
         
-        # Create a response tracking list for accumulating full response
         response_text = []
 
         stream = await client.chat.completions.create(**payload)
         
         async def logging_event_stream():
-            # Values for accumulating response and usage data
             prompt_tokens = 0
             completion_tokens = 0
             _ttft_logged = False
-            # TTFT is calculated relative to start_time of the request
             nonlocal start_time, response_text
 
             try:
                 async for chunk in stream:
-                    # Process content for response accumulation
                     if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                         delta_content = chunk.choices[0].delta.content
                         response_text.append(delta_content)
                         
-                        # Log TTFT on first content chunk
                         if not _ttft_logged:
                             ttft = time.time() - start_time
                             print(f"TTFT: {ttft:.3f} seconds")
                             _ttft_logged = True
                         
-                        # Count completion tokens (approximate by characters/4)
                         completion_tokens += len(delta_content) // 4 + 1
                     
-                    # If usage data is available, use it instead of our approximation
                     if hasattr(chunk, 'usage') and chunk.usage:
                         if hasattr(chunk.usage, 'prompt_tokens'):
                             prompt_tokens = chunk.usage.prompt_tokens
                         if hasattr(chunk.usage, 'completion_tokens'):
                             completion_tokens = chunk.usage.completion_tokens
                     
-                    # Stream the chunk to client
                     json_data = chunk.model_dump_json()
                     yield f"data: {json_data}\n\n"
                 
-                # At end of stream, compute cost based on our token count or API-provided count
                 final_response = "".join(response_text)
                 print(f"Response: {final_response}")
                 
-                # If prompt_tokens is still 0, estimate from payload
                 if prompt_tokens == 0:
-                    # Rough estimate: count all characters in messages and divide by 4
                     prompt_text = ""
                     for msg in payload.get('messages', []):
                         if isinstance(msg, dict) and 'content' in msg and msg.get('content'):
@@ -368,13 +365,10 @@ async def chat_proxy(request: Request):
                 
             except Exception as ex_stream:
                 print(f"Error during stream processing: {ex_stream}")
-                # Calculate what we have so far
                 final_response = "".join(response_text)
                 print(f"Partial Response: {final_response}")
                 
-                # If prompt_tokens is still 0, estimate from payload
                 if prompt_tokens == 0:
-                    # Rough estimate: count all characters in messages and divide by 4
                     prompt_text = ""
                     for msg in payload.get('messages', []):
                         if isinstance(msg, dict) and 'content' in msg and msg.get('content'):
@@ -392,48 +386,44 @@ async def chat_proxy(request: Request):
 
         return StreamingResponse(logging_event_stream(), media_type="text/event-stream")
     except Exception as e:
-        # Log the full traceback for better debugging
         import traceback
         print(f"Error in /chat/completions endpoint: {str(e)}\nTraceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 @app.post("/search", response_model=List[ScenarioHit])
-async def search_qdrant_endpoint(search_request: SearchRequest): # Changed request to search_request to match Pydantic model
-    global qdrant_client # Ensure we're using the global client
-    if not qdrant_client:
-        print("Search request received, but Qdrant client is not available.")
-        raise HTTPException(status_code=503, detail="Qdrant client not initialized. Search is unavailable.")
+async def search_qdrant_endpoint(request: Request, search_request: SearchRequest): 
+    current_qdrant_client = request.app.state.qdrant_client
+    current_embedding_model = request.app.state.embedding_model
+
+    if not current_qdrant_client or not current_embedding_model:
+        print("Search request received, but Qdrant client or embedding model is not available from app.state.")
+        raise HTTPException(status_code=503, detail="Qdrant client or embedding model not initialized. Search is unavailable.")
 
     print(f"Received Qdrant search request: query='{search_request.query_text}', top_k={search_request.top_k}")
     
     start_time = time.time()
     try:
-        # Use run_in_threadpool for the synchronous Qdrant search function
-        results = await run_in_threadpool(
-            search_scenarios_in_qdrant_sync, 
+        results = await search_scenarios_in_qdrant_async(
+            qdrant_client_instance=current_qdrant_client,
+            embedding_model_instance=current_embedding_model,
             query_text=search_request.query_text, 
             top_k=search_request.top_k
         )
     except Exception as e:
-        print(f"Error during search_scenarios_in_qdrant_sync execution in threadpool: {e}")
+        print(f"Error during search_scenarios_in_qdrant_async execution in /search endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error during Qdrant search: {str(e)}")
     
     end_time = time.time()
-    print(f"Total Qdrant request processing time: {end_time - start_time:.4f} seconds")
+    print(f"Total Qdrant /search request processing time: {end_time - start_time:.4f} seconds")
 
     if not results:
-        print("No results found from Qdrant or search failed.")
-        # Returning an empty list is consistent with ragpipeline.py
+        print("No results found from Qdrant or search failed in /search endpoint.")
     
-    print(f"Returning {len(results)} scenarios from Qdrant.")
+    print(f"Returning {len(results)} scenarios from Qdrant in /search endpoint.")
     return results
 
 @app.post("/trieve-search")
-async def trieve_search(request: Request): # request parameter is unused for this health check
-    """
-    Perform a health check on the Trieve API using httpx.
-    Note: This endpoint currently performs a health check.
-    """
+async def trieve_search(request: Request): 
     try:
         start_time = time.time()
         
@@ -443,7 +433,6 @@ async def trieve_search(request: Request): # request parameter is unused for thi
         async with httpx.AsyncClient() as client:
             response = await client.get(url)
         
-        # Raise an exception for bad status codes (4xx or 5xx)
         response.raise_for_status()
         
         response_text = response.text
@@ -455,14 +444,12 @@ async def trieve_search(request: Request): # request parameter is unused for thi
         return {"trieve_health_status": "success", "response": response_text}
 
     except httpx.HTTPStatusError as http_err:
-        # For httpx.HTTPStatusError, the response is http_err.response
         print(f"Trieve health check HTTP error: {http_err} - Status: {http_err.response.status_code} - Response: {http_err.response.text}")
         raise HTTPException(status_code=http_err.response.status_code, 
                             detail=f"Trieve API health check failed: {str(http_err)} - {http_err.response.text}")
     except httpx.RequestError as req_err:
-        # For other httpx request errors (e.g., network issues)
         print(f"Trieve health check request error: {req_err}")
-        raise HTTPException(status_code=503, # Service Unavailable
+        raise HTTPException(status_code=503,
                             detail=f"Trieve API health check request failed: {str(req_err)}")
     except Exception as e:
         print(f"Unexpected error in Trieve health check endpoint: {e}")
