@@ -229,20 +229,31 @@ async def search_trieve(query):
         return "\n".join(lines)
 
 def get_recent_messages(messages):
-    assistant_content = None
-    user_content = None
+    assistant_contents = [None, None]  # [second_to_last, last]
+    user_contents = [None, None]      # [second_to_last, last]
+    
     for message in reversed(messages):
         role = message.get('role')
         if role in ('tool', 'function') or message.get('tool_call'):
             continue
         content = message.get('content')
-        if role == 'assistant' and assistant_content is None:
-            assistant_content = content
-        if role == 'user' and user_content is None:
-            user_content = content
-        if assistant_content is not None and user_content is not None:
+        
+        if role == 'assistant':
+            if assistant_contents[1] is None:
+                assistant_contents[1] = content
+            elif assistant_contents[0] is None:
+                assistant_contents[0] = content
+        elif role == 'user':
+            if user_contents[1] is None:
+                user_contents[1] = content
+            elif user_contents[0] is None:
+                user_contents[0] = content
+                
+        if all(assistant_contents) and all(user_contents):
             break
-    return f"User: {user_content}\nAssistant: {assistant_content}"
+    
+    # Format the output in chronological order
+    return f"Assistant: {assistant_contents[0] or 'N/A'}\nUser: {user_contents[0] or 'N/A'}\nAssistant: {assistant_contents[1] or 'N/A'}\nUser: {user_contents[1] or 'N/A'}"
 
 def system_prompt_inject(trieve_response, messages):
     if not messages or messages[0].get('role') != 'system':
