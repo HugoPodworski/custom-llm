@@ -119,17 +119,15 @@ def search_scenarios_in_qdrant_sync(query_text: str, top_k: int = 5) -> List[Dic
         return []
 
     t_embedding_start = time.time()
-    print(f"Embedding query: '{query_text}'...")
     query_embedding = embed_query_text(query_text)
     t_embedding_end = time.time()
-    print(f"  Embedding time: {t_embedding_end - t_embedding_start:.4f} seconds")
+    print(f"Embedding Time: {t_embedding_end - t_embedding_start:.4f} seconds")
 
     if not query_embedding:
         print("Failed to generate query embedding. Skipping search.")
         return []
     
     t_qdrant_call_start = time.time()
-    print(f"Searching Qdrant collection '{QDRANT_COLLECTION_NAME}' with embedded query...")
     try:
         search_result = qdrant_client.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
@@ -170,7 +168,7 @@ def search_scenarios_in_qdrant_sync(query_text: str, top_k: int = 5) -> List[Dic
         t_qdrant_call_end = time.time()
         # Ensure t_qdrant_call_start was defined
         if 't_qdrant_call_start' in locals() or 't_qdrant_call_start' in globals():
-            print(f"  Qdrant call + result processing time: {t_qdrant_call_end - t_qdrant_call_start:.4f} seconds")
+            print(f"Qdrant Search Time: {t_qdrant_call_end - t_qdrant_call_start:.4f} seconds")
 
 async def search_trieve(query):
     api_key = os.getenv("TRIEVE_API_KEY")
@@ -258,20 +256,22 @@ async def chat_proxy(request: Request):
                 del payload[key]
         
         rag_query = get_recent_messages(payload.get('messages', []))
-        print(f"Generated RAG query: {rag_query}") # Log the RAG query
+        # Remove verbose logging
+        # print(f"Generated RAG query: {rag_query}")
 
         rag_search_start_time = time.time()
         
         qdrant_results = []
         if qdrant_client:
-            print(f"Qdrant client found, proceeding with search for query: '{rag_query}'")
+            # Remove verbose logging
+            # print(f"Qdrant client found, proceeding with search for query: '{rag_query}'")
             qdrant_results = await run_in_threadpool(
                 search_scenarios_in_qdrant_sync,
                 query_text=rag_query,
                 top_k=5 
             )
         else:
-            print("Qdrant client not initialized. Skipping Qdrant search for /chat/completions.")
+            print("Qdrant client not initialized. Skipping Qdrant search.")
 
         formatted_rag_results = []
         if qdrant_results:
@@ -285,70 +285,106 @@ async def chat_proxy(request: Request):
         if not rag_response_string: 
             rag_response_string = "No relevant context found from knowledge base."
 
-        print(f"Formatted RAG (Qdrant) results: {rag_response_string}")
         rag_search_speed = time.time() - rag_search_start_time
         print(f"Total RAG Time: {rag_search_speed:.3f} seconds")
         
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
-        # Ensure payload is printed before any streaming activity for this request
-        # print(f"Payload: {payload}") # This was moved up or ensure it's before this section if re-added
+        # Print payload - keep for debugging but show shortened version
+        truncated_payload = {**payload}
+        if 'messages' in truncated_payload:
+            messages_preview = []
+            for msg in truncated_payload['messages']:
+                content = msg.get('content', '')
+                content_preview = content[:100] + '...' if len(content) > 100 else content
+                messages_preview.append({**msg, 'content': content_preview})
+            truncated_payload['messages'] = messages_preview
+        print(f"Payload: {truncated_payload}")
         
+        # Track the model being used for cost calculation
+        model_name = payload.get("model", "default")
+        
+        # Create a response tracking list for accumulating full response
+        response_text = []
+
         stream = await client.chat.completions.create(**payload)
-        
-        # captured_ttft = [None] # Will be handled within logging_event_stream
         
         async def logging_event_stream():
             # Values for accumulating response and usage data
-            _prompt_tokens = 0
-            _completion_tokens = 0
-            _response_parts = []
+            prompt_tokens = 0
+            completion_tokens = 0
             _ttft_logged = False
             # TTFT is calculated relative to start_time of the request
-            nonlocal start_time, payload # Ensure access to outer scope variables
+            nonlocal start_time, response_text
 
             try:
                 async for chunk in stream:
-                    if not _ttft_logged and chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                        # Log TTFT on first actual content chunk
-                        ttft = time.time() - start_time
-                        # captured_ttft[0] = ttft # Not strictly needed if only printing
-                        print(f"TTFT: {ttft:.3f} seconds")
-                        _ttft_logged = True
-                    
+                    # Process content for response accumulation
                     if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                        _response_parts.append(chunk.choices[0].delta.content)
+                        delta_content = chunk.choices[0].delta.content
+                        response_text.append(delta_content)
+                        
+                        # Log TTFT on first content chunk
+                        if not _ttft_logged:
+                            ttft = time.time() - start_time
+                            print(f"TTFT: {ttft:.3f} seconds")
+                            _ttft_logged = True
+                        
+                        # Count completion tokens (approximate by characters/4)
+                        completion_tokens += len(delta_content) // 4 + 1
                     
-                    # Usage is typically sent in the last chunk for OpenAI streams
-                    if chunk.usage:
-                        _prompt_tokens = chunk.usage.prompt_tokens
-                        _completion_tokens = chunk.usage.completion_tokens
+                    # If usage data is available, use it instead of our approximation
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        if hasattr(chunk.usage, 'prompt_tokens'):
+                            prompt_tokens = chunk.usage.prompt_tokens
+                        if hasattr(chunk.usage, 'completion_tokens'):
+                            completion_tokens = chunk.usage.completion_tokens
                     
+                    # Stream the chunk to client
                     json_data = chunk.model_dump_json()
                     yield f"data: {json_data}\n\n"
                 
-                # This part executes after the loop if stream completes normally
-                if not _ttft_logged: 
-                    # If stream was empty or had no content, TTFT wasn't logged.
-                    # You might log a "Time to empty response" or similar if needed.
-                    pass
-
-            except Exception as ex_stream_processing: # Catch errors during stream processing itself
-                print(f"Error during OpenAI stream processing: {ex_stream_processing}")
-                # Optionally, re-raise or handle to ensure finally block still executes well
-                # For now, it will proceed to finally
-            finally:
-                # This block executes when the generator is closed (stream exhausted or client disconnect)
-                final_response = "".join(_response_parts)
+                # At end of stream, compute cost based on our token count or API-provided count
+                final_response = "".join(response_text)
                 print(f"Response: {final_response}")
                 
-                model_name = payload.get("model", "unknown_model")
+                # If prompt_tokens is still 0, estimate from payload
+                if prompt_tokens == 0:
+                    # Rough estimate: count all characters in messages and divide by 4
+                    prompt_text = ""
+                    for msg in payload.get('messages', []):
+                        if isinstance(msg, dict) and 'content' in msg and msg.get('content'):
+                            prompt_text += msg.get('content', '')
+                    prompt_tokens = len(prompt_text) // 4 + 1
                 
-                # Use the calculate_cost function defined earlier
-                cost = calculate_cost(model_name, _prompt_tokens, _completion_tokens)
+                cost = calculate_cost(model_name, prompt_tokens, completion_tokens)
                 
-                print(f"Prompt Tokens: {_prompt_tokens}")
-                print(f"Completion Tokens: {_completion_tokens}")
+                print(f"Prompt Tokens: {prompt_tokens}")
+                print(f"Completion Tokens: {completion_tokens}")
+                print(f"Cost: ${cost:.6f}")
+                
+                total_request_time = time.time() - start_time
+                print(f"Total Request Processing Time: {total_request_time:.3f} seconds")
+                
+            except Exception as ex_stream:
+                print(f"Error during stream processing: {ex_stream}")
+                # Calculate what we have so far
+                final_response = "".join(response_text)
+                print(f"Partial Response: {final_response}")
+                
+                # If prompt_tokens is still 0, estimate from payload
+                if prompt_tokens == 0:
+                    # Rough estimate: count all characters in messages and divide by 4
+                    prompt_text = ""
+                    for msg in payload.get('messages', []):
+                        if isinstance(msg, dict) and 'content' in msg and msg.get('content'):
+                            prompt_text += msg.get('content', '')
+                    prompt_tokens = len(prompt_text) // 4 + 1
+                
+                cost = calculate_cost(model_name, prompt_tokens, completion_tokens)
+                
+                print(f"Prompt Tokens: {prompt_tokens}")
+                print(f"Completion Tokens: {completion_tokens}")
                 print(f"Cost: ${cost:.6f}")
                 
                 total_request_time = time.time() - start_time
