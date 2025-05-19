@@ -311,6 +311,8 @@ async def chat_proxy(request: Request):
         
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
+        payload['stream_options'] = {"include_usage": True}
+
         print(f"Payload: {payload}")
         
         model_name = payload.get("model", "default")
@@ -323,6 +325,7 @@ async def chat_proxy(request: Request):
             prompt_tokens = 0
             completion_tokens = 0
             _ttft_logged = False
+            last_chunk = None  # Track the last chunk
             nonlocal start_time, response_text
 
             try:
@@ -344,13 +347,23 @@ async def chat_proxy(request: Request):
                         if hasattr(chunk.usage, 'completion_tokens'):
                             completion_tokens = chunk.usage.completion_tokens
                     
+                    last_chunk = chunk  # Save the last chunk
+
                     json_data = chunk.model_dump_json()
                     yield f"data: {json_data}\n\n"
                 
                 final_response = "".join(response_text)
                 print(f"Response: {final_response}")
                 
-                if prompt_tokens == 0:
+                # After the stream ends, check usage in last_chunk
+                if last_chunk and hasattr(last_chunk, "usage") and last_chunk.usage is not None:
+                    prompt_tokens = getattr(last_chunk.usage, "prompt_tokens", 0)
+                    completion_tokens = getattr(last_chunk.usage, "completion_tokens", 0)
+                    print(f"Prompt Tokens: {prompt_tokens}")
+                    print(f"Completion Tokens: {completion_tokens}")
+                    print(f"Total Tokens: {getattr(last_chunk.usage, 'total_tokens', 0)}")
+                else:
+                    # Fallback: estimate tokens if usage is missing
                     prompt_text = ""
                     for msg in payload.get('messages', []):
                         if isinstance(msg, dict) and 'content' in msg and msg.get('content'):
@@ -359,8 +372,6 @@ async def chat_proxy(request: Request):
                 
                 cost = calculate_cost(model_name, prompt_tokens, completion_tokens)
                 
-                print(f"Prompt Tokens: {prompt_tokens}")
-                print(f"Completion Tokens: {completion_tokens}")
                 print(f"Cost: ${cost:.6f}")
                 
                 total_request_time = time.time() - start_time
@@ -371,7 +382,15 @@ async def chat_proxy(request: Request):
                 final_response = "".join(response_text)
                 print(f"Partial Response: {final_response}")
                 
-                if prompt_tokens == 0:
+                # After the stream ends, check usage in last_chunk
+                if last_chunk and hasattr(last_chunk, "usage") and last_chunk.usage is not None:
+                    prompt_tokens = getattr(last_chunk.usage, "prompt_tokens", 0)
+                    completion_tokens = getattr(last_chunk.usage, "completion_tokens", 0)
+                    print(f"Prompt Tokens: {prompt_tokens}")
+                    print(f"Completion Tokens: {completion_tokens}")
+                    print(f"Total Tokens: {getattr(last_chunk.usage, 'total_tokens', 0)}")
+                else:
+                    # Fallback: estimate tokens if usage is missing
                     prompt_text = ""
                     for msg in payload.get('messages', []):
                         if isinstance(msg, dict) and 'content' in msg and msg.get('content'):
@@ -380,8 +399,6 @@ async def chat_proxy(request: Request):
                 
                 cost = calculate_cost(model_name, prompt_tokens, completion_tokens)
                 
-                print(f"Prompt Tokens: {prompt_tokens}")
-                print(f"Completion Tokens: {completion_tokens}")
                 print(f"Cost: ${cost:.6f}")
                 
                 total_request_time = time.time() - start_time
