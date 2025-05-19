@@ -39,13 +39,13 @@ async def lifespan(app: FastAPI):
             "api_key": QDRANT_API_KEY,
             "prefer_grpc": True,
             "timeout": 10,
-            "grpc_options": [
-                ('grpc.keepalive_time_ms', 30000),
-                ('grpc.keepalive_timeout_ms', 10000),
-                ('grpc.keepalive_permit_without_calls', 1),
-                ('grpc.http2.min_time_between_pings_ms', 10000),
-                ('grpc.http2.max_pings_without_data', 0),
-            ]
+            "grpc_options": {
+                'grpc.keepalive_time_ms': 30000,
+                'grpc.keepalive_timeout_ms': 10000,
+                'grpc.keepalive_permit_without_calls': 1,
+                'grpc.http2.min_time_between_pings_ms': 10000,
+                'grpc.http2.max_pings_without_data': 0,
+            }
         }
         try:
             print(f"Lifespan: Initializing AsyncQdrantClient with args: {qdrant_client_init_args}")
