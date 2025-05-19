@@ -352,7 +352,11 @@ async def chat_proxy(request: Request):
                     last_chunk = chunk  # Save the last chunk
 
                     json_data = chunk.model_dump_json()
-                    yield f"data: {json_data}\n\n"
+                    data_dict = json.loads(json_data)
+                    data_dict["metadata"] = {"message_id": "123321908"}
+                    new_json_data = json.dumps(data_dict)
+                    print(new_json_data)
+                    yield f"data: {new_json_data}\n\n"
                 
                 final_response = "".join(response_text)
                 print(f"Response: {final_response}")
