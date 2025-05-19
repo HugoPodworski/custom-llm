@@ -300,15 +300,7 @@ async def chat_proxy(request: Request):
         
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
-        truncated_payload = {**payload}
-        if 'messages' in truncated_payload:
-            messages_preview = []
-            for msg in truncated_payload['messages']:
-                content = msg.get('content', '')
-                content_preview = content[:100] + '...' if len(content) > 100 else content
-                messages_preview.append({**msg, 'content': content_preview})
-            truncated_payload['messages'] = messages_preview
-        print(f"Payload: {truncated_payload}")
+        print(f"Payload: {payload}")
         
         model_name = payload.get("model", "default")
         
