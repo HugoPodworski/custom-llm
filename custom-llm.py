@@ -158,7 +158,7 @@ async def search_scenarios_in_qdrant_async(
     try:
         search_result = await qdrant_client_instance.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_embedding,
+            query=query_embedding,
             limit=top_k,
             with_payload=True
         )
