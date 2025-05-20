@@ -312,8 +312,6 @@ async def chat_proxy(request: Request):
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
         payload['stream_options'] = {"include_usage": True}
-        payload['metadata'] = {"message_id": "123321908"}
-
 
         print(f"Payload: {payload}")
         
