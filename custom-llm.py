@@ -22,8 +22,8 @@ load_dotenv()
 # Qdrant and Embedding Model Configuration
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-QDRANT_COLLECTION_NAME = "liv-scenarios"
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+QDRANT_COLLECTION_NAME = "liv-scenarios-2"
+EMBEDDING_MODEL_NAME = "static-retrieval-mrl-en-v1"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
