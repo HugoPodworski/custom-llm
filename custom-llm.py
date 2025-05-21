@@ -8,7 +8,7 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
-from openai import AsyncOpenAI
+from langfuse.openai import AsyncOpenAI
 from starlette.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import httpx
