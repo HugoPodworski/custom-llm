@@ -16,6 +16,8 @@ from qdrant_client import AsyncQdrantClient
 from sentence_transformers import SentenceTransformer
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from langfuse import Langfuse
+from langfuse.openai import openai
 
 load_dotenv()
 
@@ -81,6 +83,7 @@ app.add_middleware(
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 groq_client = AsyncOpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1")
+langfuse = Langfuse()
 
 MODEL_PRICES = {
     "default": {"prompt": 0.0005 / 1000, "completion": 0.0015 / 1000},
@@ -267,11 +270,22 @@ def system_prompt_inject(trieve_response, messages):
 async def health_check():
     return {"status": "ok"}
 
+@app.post("/langfuse/trace")
+async def langfuse_trace(request: Request):
+    payload = await request.json()
+    session_id = payload.get('session_id')
+    langfuse.trace(name=session_id, id=session_id)
+    return {"status": "ok"}
+    
 @app.post("/chat/completions")
 async def chat_proxy(request: Request):
     try:
         start_time = time.time()
         payload = await request.json()
+        
+        # Extract call_id from payload to use as session_id
+        session_id = payload.get('call', {}).get('id')
+        
         keys_to_remove = ['call', 'metadata', 'activeAssistant', 'credentials', 'toolDefinitionsExcluded', 'customer', 'phoneNumber', 'assistant', 'timestamp']
         for key in keys_to_remove:
             if key in payload:
@@ -314,6 +328,9 @@ async def chat_proxy(request: Request):
         payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
 
         payload['stream_options'] = {"include_usage": True}
+
+        payload['trace_id'] = session_id
+        payload['name'] = session_id
 
         print(f"Payload: {payload}")
         
@@ -359,7 +376,7 @@ async def chat_proxy(request: Request):
                 
                 final_response = "".join(response_text)
                 print(f"Response: {final_response}")
-                
+                openai.flush_langfuse()
                 # After the stream ends, check usage in last_chunk
                 if last_chunk and hasattr(last_chunk, "usage") and last_chunk.usage is not None:
                     prompt_tokens = getattr(last_chunk.usage, "prompt_tokens", 0)
