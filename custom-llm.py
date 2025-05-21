@@ -80,10 +80,12 @@ app.add_middleware(
 )
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+groq_client = AsyncOpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1")
 
 MODEL_PRICES = {
     "default": {"prompt": 0.0005 / 1000, "completion": 0.0015 / 1000},
     "gpt-4.1-mini": {"prompt": 0.0004 / 1000, "completion": 0.0016 / 1000},
+    "llama-3.3-70b-versatile": {"prompt": 0.00059 / 1000, "completion": 0.00079 / 1000},
     # Add more models and their pricing here
 }
 
@@ -319,7 +321,10 @@ async def chat_proxy(request: Request):
         
         response_text = []
 
-        stream = await client.chat.completions.create(**payload)
+        if model_name == "llama-3.3-70b-versatile":
+            stream = await groq_client.chat.completions.create(**payload)
+        else:
+            stream = await client.chat.completions.create(**payload)
         
         async def logging_event_stream():
             prompt_tokens = 0
