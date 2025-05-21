@@ -274,7 +274,8 @@ async def health_check():
 async def langfuse_trace(request: Request):
     payload = await request.json()
     session_id = payload.get('session_id')
-    langfuse.trace(name=session_id, id=session_id)
+    assistant_name = payload.get('assistant_name')
+    langfuse.trace(name=session_id, id=session_id, tags=[f"{assistant_name}"])
     return {"status": "ok"}
     
 @app.post("/chat/completions")
