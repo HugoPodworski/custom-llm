@@ -13,7 +13,7 @@ EMBEDDING_MODEL_NAME = "static-retrieval-mrl-en-v1"
 
 # TecDoc API Configuration
 TECDOC_API_KEY = os.getenv("TECDOC_API_KEY")
-TECDOC_HOST = "tecdoc-web-services.p.rapidapi.com"
+TECDOC_HOST = "auto-parts-catalog.p.rapidapi.com"
 
 # Initialize clients
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
