@@ -241,10 +241,18 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                 }
 
             def find_model():
+                # Helper to normalize model names for robust matching
+                def normalize_model_name(name):
+                    return name.upper().replace('-', '').replace('_', '').replace(' ', '')
+
+                normalized_vin_model = normalize_model_name(vin_data['model'])
+                
                 # First try to find exact model name match
                 for model in model_data['models']:
-                    if vin_data['model'].upper() in model['modelName'].upper():
-                        print(f"\nFound potential model name match: {model['modelName']}")
+                    normalized_api_model = normalize_model_name(model['modelName'])
+
+                    if normalized_vin_model in normalized_api_model:
+                        print(f"\nFound potential model name match: {model['modelName']} (Normalized: {normalized_api_model})")
                         year_from = int(model['modelYearFrom'][:4])
                         year_to = datetime.datetime.now().year if model['modelYearTo'] is None else int(model['modelYearTo'][:4])
 
@@ -257,11 +265,14 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
 
                 # If no exact model match found, fall back to body class matching
                 print("\nNo exact model name match found, trying body class matching...")
+                normalized_body_class = normalize_model_name(target_body_class)
+
                 for model in model_data['models']:
-                    if target_body_class.upper() not in model['modelName'].upper():
+                    normalized_api_model = normalize_model_name(model['modelName'])
+                    if normalized_body_class not in normalized_api_model:
                         continue
                         
-                    print(f"\nFound potential body class match: {model['modelName']}")
+                    print(f"\nFound potential body class match: {model['modelName']} (Normalized: {normalized_api_model})")
                     year_from = int(model['modelYearFrom'][:4])
                     year_to = datetime.datetime.now().year if model['modelYearTo'] is None else int(model['modelYearTo'][:4])
 
