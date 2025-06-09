@@ -3,6 +3,7 @@ import datetime
 import time
 import json
 from pathlib import Path
+from thefuzz import fuzz
 
 # IMPORTANT: This entire file now uses asynchronous, non-blocking I/O (httpx).
 # It can be called directly from FastAPI async endpoints.
@@ -10,7 +11,7 @@ from pathlib import Path
 async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> dict:
     """
     Takes a VIN, decodes it, and steps through the TecDoc API to find the vehicleId.
-    This function is a refactoring of the original script to be a callable utility.
+    This function uses fuzzy string matching and improved tolerance handling for better accuracy.
     """
     # --- Configuration ---
     HEADERS = {
@@ -174,10 +175,10 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                 target_make = vin_data.get("make")
                 target_year = int(vin_data.get("model_year", 0))
                 target_body_class = vin_data.get("body_class")
-                target_cylinders = int(vin_data.get("engine_number_of_cylinders", 0))
+                target_cylinders = int(float(vin_data.get("engine_number_of_cylinders", 0)))
                 target_displacement = float(vin_data.get("displacement_(l)", 0.0))
                 target_engine_code = vin_data.get("engine_model")
-                target_power_hp = int(vin_data.get("engine_brake_(hp)_from", 0))
+                target_power_hp = int(float(vin_data.get("engine_brake_(hp)_from", 0)))
                 target_drive_type = vin_data.get("drive_type")
                 return (target_make, target_year, target_body_class, target_cylinders,
                        target_displacement, target_engine_code, target_power_hp, target_drive_type)
@@ -241,49 +242,78 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                 }
 
             def find_model():
-                # Helper to normalize model names for robust matching
-                def normalize_model_name(name):
-                    return name.upper().replace('-', '').replace('_', '').replace(' ', '')
-
-                normalized_vin_model = normalize_model_name(vin_data['model'])
+                """
+                Finds the best model match using a two-stage process:
+                1. Fuzzy match to find all models with a high similarity score.
+                2. Filter the high-score candidates by the target manufacturing year.
+                """
+                vin_model_name = vin_data['model']
                 
-                # First try to find exact model name match
+                # A high threshold to ensure we only consider very strong matches.
+                # This can be tuned if needed.
+                MINIMUM_SCORE_THRESHOLD = 85
+                
+                print(f"\nSearching for models similar to '{vin_model_name}' (Year: {target_year})...")
+                
+                # --- Stage 1: Find all high-similarity candidates ---
+                strong_candidates = []
                 for model in model_data['models']:
-                    normalized_api_model = normalize_model_name(model['modelName'])
+                    model_name_from_api = model['modelName']
+                    
+                    # fuzz.token_set_ratio is robust against word order and extra descriptors.
+                    score = fuzz.token_set_ratio(vin_model_name, model_name_from_api)
+                    
+                    if score >= MINIMUM_SCORE_THRESHOLD:
+                        strong_candidates.append({'model': model, 'score': score})
+                        print(f"  -> Found potential candidate: '{model_name_from_api}' (Score: {score})")
 
-                    if normalized_vin_model in normalized_api_model:
-                        print(f"\nFound potential model name match: {model['modelName']} (Normalized: {normalized_api_model})")
-                        year_from = int(model['modelYearFrom'][:4])
-                        year_to = datetime.datetime.now().year if model['modelYearTo'] is None else int(model['modelYearTo'][:4])
+                if not strong_candidates:
+                    print("  ✗ No models found with a similarity score above the threshold.")
+                    # Fallback to body class matching
+                    print("\nTrying body class matching as fallback...")
+                    normalized_body_class = target_body_class.upper().replace('-', '').replace('_', '').replace(' ', '')
+                    
+                    for model in model_data['models']:
+                        normalized_api_model = model['modelName'].upper().replace('-', '').replace('_', '').replace(' ', '')
+                        if normalized_body_class in normalized_api_model:
+                            year_from = int(model['modelYearFrom'][:4])
+                            year_to_str = model.get('modelYearTo')
+                            year_to = datetime.datetime.now().year if year_to_str is None else int(year_to_str[:4])
+                            
+                            if year_from <= target_year <= year_to:
+                                print(f"  ✓ Found body class match: {model['modelName']} (ID: {model['modelId']})")
+                                return model['modelId']
+                    return None
 
-                        if year_from <= target_year <= year_to:
-                            print(f"  ✓ Year range matches: {year_from}-{year_to}")
-                            print(f"  ✓ Selected model: '{model['modelName']}' (ID: {model['modelId']})")
-                            return model['modelId']
-                        else:
-                            print(f"  ✗ Year out of range ({year_from}-{year_to})")
+                # --- Stage 2: Filter candidates by year and find the best one ---
+                print(f"\nFound {len(strong_candidates)} strong candidate(s). Filtering by year ({target_year})...")
+                
+                best_match = None
+                highest_score_in_year = 0
 
-                # If no exact model match found, fall back to body class matching
-                print("\nNo exact model name match found, trying body class matching...")
-                normalized_body_class = normalize_model_name(target_body_class)
+                for candidate in strong_candidates:
+                    model_details = candidate['model']
+                    
+                    year_from = int(model_details['modelYearFrom'][:4])
+                    year_to_str = model_details.get('modelYearTo')
+                    year_to = datetime.datetime.now().year if year_to_str is None else int(year_to_str[:4])
 
-                for model in model_data['models']:
-                    normalized_api_model = normalize_model_name(model['modelName'])
-                    if normalized_body_class not in normalized_api_model:
-                        continue
-                        
-                    print(f"\nFound potential body class match: {model['modelName']} (Normalized: {normalized_api_model})")
-                    year_from = int(model['modelYearFrom'][:4])
-                    year_to = datetime.datetime.now().year if model['modelYearTo'] is None else int(model['modelYearTo'][:4])
-
+                    # Check if the target year is within the model's production range
                     if year_from <= target_year <= year_to:
-                        print(f"  ✓ Year range matches: {year_from}-{year_to}")
-                        print(f"  ✓ Selected model: '{model['modelName']}' (ID: {model['modelId']})")
-                        return model['modelId']
+                        print(f"  ✓ Candidate '{model_details['modelName']}' has a matching year range ({year_from}-{year_to}).")
+                        # If this is the best-scoring model within the correct year, select it.
+                        if candidate['score'] > highest_score_in_year:
+                            highest_score_in_year = candidate['score']
+                            best_match = model_details
                     else:
-                        print(f"  ✗ Year out of range ({year_from}-{year_to})")
-                
-                return None
+                        print(f"  ✗ Candidate '{model_details['modelName']}' has an incorrect year range ({year_from}-{year_to}).")
+
+                if best_match:
+                    print(f"\n✓ Selected final model: '{best_match['modelName']}' (ID: {best_match['modelId']})")
+                    return best_match['modelId']
+                else:
+                    print("\n✗ Found strong name matches, but none were in the correct year range.")
+                    return None
 
             potential_model_id = time_processing_step("Find Model", find_model)
             if not potential_model_id:
@@ -325,22 +355,30 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     print(f"  ✓ Year in range: {year_from}-{year_to}")
 
                     # Check cylinders
-                    if int(vehicle.get('numberOfCylinders', 0)) != target_cylinders:
+                    if int(float(vehicle.get('numberOfCylinders', 0))) != target_cylinders:
                         print(f"  ✗ Cylinder count mismatch: {vehicle.get('numberOfCylinders')} vs {target_cylinders}")
                         continue
                     print(f"  ✓ Cylinder count matches: {target_cylinders}")
 
-                    # Check displacement
-                    if float(vehicle.get('capacityLt', 0.0)) != target_displacement:
-                        print(f"  ✗ Displacement mismatch: {vehicle.get('capacityLt')}L vs {target_displacement}L")
-                        continue
-                    print(f"  ✓ Displacement matches: {target_displacement}L")
+                    # Check displacement with a 2% tolerance to handle marketing vs technical values
+                    capacity_lt_from_api = float(vehicle.get('capacityLt', 0.0))
+                    DISP_TOLERANCE = 0.02  # 2% tolerance
+                    disp_lower_bound = target_displacement * (1 - DISP_TOLERANCE)
+                    disp_upper_bound = target_displacement * (1 + DISP_TOLERANCE)
 
-                    # Check engine code
-                    if target_engine_code not in vehicle.get('engineCodes', ''):
+                    if not (disp_lower_bound <= capacity_lt_from_api <= disp_upper_bound):
+                        print(f"  ✗ Displacement mismatch: API has {capacity_lt_from_api}L, VIN target is {target_displacement}L")
+                        continue
+                    print(f"  ✓ Displacement matches: API has {capacity_lt_from_api}L, within tolerance of VIN's {target_displacement}L")
+
+                    # Check engine code (skip if VIN didn't provide engine code)
+                    if target_engine_code and target_engine_code not in vehicle.get('engineCodes', ''):
                         print(f"  ✗ Engine code mismatch: {vehicle.get('engineCodes')} vs {target_engine_code}")
                         continue
-                    print(f"  ✓ Engine code matches: {target_engine_code}")
+                    if target_engine_code:
+                        print(f"  ✓ Engine code matches: {target_engine_code}")
+                    else:
+                        print(f"  ⚠ Engine code not available from VIN, skipping engine code check")
                     
                     # Check power (with 5% tolerance)
                     power_ps = float(vehicle.get('powerPs', 0.0))
@@ -382,4 +420,4 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
         "total_duration_seconds": round(total_duration, 3),
         "timing_details": timings,
         "vehicle_id": final_vehicle_id
-    } 
+    }
