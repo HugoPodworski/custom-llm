@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from langfuse.openai import AsyncOpenAI
+from langfuse.openai import openai as langfuse_openai_wrapper
 from langfuse import Langfuse
 
 load_dotenv()
@@ -16,8 +16,8 @@ TECDOC_API_KEY = os.getenv("TECDOC_API_KEY")
 TECDOC_HOST = "auto-parts-catalog.p.rapidapi.com"
 
 # Initialize clients
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-groq_client = AsyncOpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1")
+client = langfuse_openai_wrapper.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+groq_client = langfuse_openai_wrapper.AsyncOpenAI(api_key=os.getenv("GROQ_API_KEY"), base_url="https://api.groq.com/openai/v1")
 langfuse = Langfuse()
 
 # Model pricing configuration
