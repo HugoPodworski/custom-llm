@@ -145,7 +145,7 @@ async def chat_proxy(request: Request):
                 # The `langfuse.openai` wrapper already creates the generation.
                 # We can get a reference to it to add custom metadata/updates
                 # if needed, but much is handled automatically.
-                current_llm_generation = langfuse.get_current_observation()
+                current_llm_generation = langfuse.get_current_span()
 
                 try:
                     async for chunk in stream:
