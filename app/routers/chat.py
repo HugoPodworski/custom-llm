@@ -104,7 +104,9 @@ async def chat_proxy(request: Request):
 
         payload['stream_options'] = {"include_usage": True}
 
-        payload['trace_id'] = langfuse.create_trace_id(seed=session_id)
+        if 'trace_id' in payload:
+             del payload['trace_id']
+             
         payload['name'] = session_id
 
         print(f"Payload: {payload}")
