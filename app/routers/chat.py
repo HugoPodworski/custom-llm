@@ -134,18 +134,13 @@ async def chat_proxy(request: Request):
                 stream = await client.chat.completions.create(**payload)
 
             async def logging_event_stream():
-                # The `nonlocal start_time` refers to the `start_time` outside `chat_proxy`,
-                # which is the start of the *entire request*.
-                # For TTFT, you'd want the start time of the LLM request specifically.
-                # We'll use `llm_request_start_time` for TTFT.
                 _ttft_logged = False
                 last_chunk = None
                 collected_response_text = []
 
-                # The `langfuse.openai` wrapper already creates the generation.
-                # We can get a reference to it to add custom metadata/updates
-                # if needed, but much is handled automatically.
-                current_llm_generation = langfuse.get_current_span()
+                # There is no need to get the 'current_llm_generation' object.
+                # The `langfuse.openai` wrapper has already created it and set it as the active
+                # context. We will use `langfuse.update_current_generation()` to modify it.
 
                 try:
                     async for chunk in stream:
@@ -154,10 +149,10 @@ async def chat_proxy(request: Request):
                             collected_response_text.append(delta_content)
 
                             if not _ttft_logged:
-                                ttft = time.time() - llm_request_start_time # Use LLM request start time for TTFT
+                                ttft = time.time() - llm_request_start_time
                                 print(f"TTFT: {ttft:.3f} seconds")
-                                if current_llm_generation:
-                                    current_llm_generation.update(metadata={"time_to_first_token": ttft})
+                                # CORRECT WAY: Directly update the active generation in the context.
+                                langfuse.update_current_generation(metadata={"time_to_first_token": ttft})
                                 _ttft_logged = True
 
                         last_chunk = chunk
@@ -167,25 +162,28 @@ async def chat_proxy(request: Request):
                     final_response = "".join(collected_response_text)
                     print(f"Final LLM Response: {final_response}")
 
-                    # Langfuse OpenAI wrapper typically handles final output and usage.
-                    # We explicitly add cost here as it's a custom calculation.
-                    if current_llm_generation:
-                        prompt_tokens = 0
-                        completion_tokens = 0
-                        if last_chunk and hasattr(last_chunk, "usage") and last_chunk.usage:
-                            prompt_tokens = getattr(last_chunk.usage, "prompt_tokens", 0)
-                            completion_tokens = getattr(last_chunk.usage, "completion_tokens", 0)
-                        else: # Fallback for token estimation
-                            prompt_text = "".join([msg.get('content', '') for msg in payload.get('messages', []) if isinstance(msg, dict) and msg.get('content')])
-                            prompt_tokens = len(prompt_text) // 4 + 1
-                            completion_tokens = len(final_response) // 4 + 1
-                            current_llm_generation.update(level="WARNING", status_message="Usage details missing from LLM response, tokens estimated.")
+                    # The `langfuse.openai` wrapper automatically sets the final `output`
+                    # and `usage` on the generation when the stream completes. We only need
+                    # to add our custom calculated cost.
+                    prompt_tokens = 0
+                    completion_tokens = 0
+                    if last_chunk and hasattr(last_chunk, "usage") and last_chunk.usage:
+                        prompt_tokens = getattr(last_chunk.usage, "prompt_tokens", 0)
+                        completion_tokens = getattr(last_chunk.usage, "completion_tokens", 0)
+                    else:
+                        prompt_text = "".join([msg.get('content', '') for msg in payload.get('messages', []) if isinstance(msg, dict) and msg.get('content')])
+                        prompt_tokens = len(prompt_text) // 4 + 1
+                        completion_tokens = len(final_response) // 4 + 1
+                        # CORRECT WAY: Update the active generation
+                        langfuse.update_current_generation(level="WARNING", status_message="Usage details missing from LLM response, tokens estimated.")
 
-                        cost = calculate_cost(model_name, prompt_tokens, completion_tokens)
-                        current_llm_generation.update(cost_details={"total_cost": cost})
-                        print(f"Cost: ${cost:.6f}")
+                    cost = calculate_cost(model_name, prompt_tokens, completion_tokens)
+                    # CORRECT WAY: Update the active generation with the cost
+                    langfuse.update_current_generation(cost_details={"total_cost": cost})
+                    print(f"Cost: ${cost:.6f}")
 
-                    # Update the overall trace output (on the root_span's trace)
+                    # Update the overall trace output on the root_span. Using the object `root_span`
+                    # is fine here as it is still in the parent scope.
                     root_span.update_trace(output={"final_llm_response": final_response})
 
                     total_request_time = time.time() - start_time
@@ -196,28 +194,26 @@ async def chat_proxy(request: Request):
                     partial_response_text = "".join(collected_response_text)
                     print(f"Partial Response: {partial_response_text}")
 
-                    # Mark the current LLM generation (if available) as ERROR
-                    if current_llm_generation:
-                        current_llm_generation.update(
-                            level="ERROR",
-                            status_message=f"Stream processing error: {ex_stream}",
-                            output=partial_response_text
-                        )
+                    # CORRECT WAY: Directly update the active generation with error information
+                    langfuse.update_current_generation(
+                        level="ERROR",
+                        status_message=f"Stream processing error: {ex_stream}",
+                        output=partial_response_text
+                    )
 
-                    # Mark the overall trace as ERROR
+                    # Update the overall trace with error information
                     root_span.update_trace(
                         level="ERROR",
                         status_message=f"Overall request failed due to stream error: {ex_stream}",
                         output={"partial_response": partial_response_text, "error": str(ex_stream)}
                     )
 
-                    # Re-calculate cost based on partial response if needed
+                    # Cost calculation on error...
                     prompt_text = "".join([msg.get('content', '') for msg in payload.get('messages', []) if isinstance(msg, dict) and msg.get('content')])
                     estimated_prompt_tokens = len(prompt_text) // 4 + 1
                     estimated_completion_tokens = len(partial_response_text) // 4 + 1
                     cost = calculate_cost(model_name, estimated_prompt_tokens, estimated_completion_tokens)
-                    if current_llm_generation:
-                        current_llm_generation.update(cost_details={"total_cost": cost})
+                    langfuse.update_current_generation(cost_details={"total_cost": cost})
                     print(f"Cost (on error): ${cost:.6f}")
 
                     total_request_time = time.time() - start_time
