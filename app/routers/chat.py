@@ -50,7 +50,8 @@ async def chat_proxy(request: Request):
         payload = await request.json()
         print(f"Raw Payload: {payload}")
         session_id = payload.get('call', {}).get('id', 'unknown_session') # Provide default for seed safety
-        assistant_name = payload.get('assistant', 'unknown_assistant')
+        assistant_name = payload.get('assistant', {}).get('name', 'unknown_assistant')
+        assistant_id = payload.get('assistant', {}).get('id')
 
         # ---------------- Langfuse root span (v3) - WRAPPING THE ENTIRE LOGIC ----------------
         deterministic_trace_id = Langfuse.create_trace_id(seed=session_id or 'unknown_session')
@@ -74,47 +75,51 @@ async def chat_proxy(request: Request):
                 if key in payload:
                     del payload[key]
         
-            # --- RAG Search Span: Wrap it in its own span ---
-            # This will be a child of the `root_span`.
-            with langfuse.start_as_current_span(name="rag-search") as rag_span:
-                rag_query = get_recent_messages(payload.get('messages', []))
-                rag_span.update(input={"query": rag_query}) # Log the RAG input
+            rag_response_string = "No relevant context found from knowledge base."
+            if assistant_id != 'cf5c3b80-4aec-48d8-a4d7-9945c7e98782':
+                # --- RAG Search Span: Wrap it in its own span ---
+                # This will be a child of the `root_span`.
+                with langfuse.start_as_current_span(name="rag-search") as rag_span:
+                    rag_query = get_recent_messages(payload.get('messages', []))
+                    rag_span.update(input={"query": rag_query}) # Log the RAG input
 
-                rag_search_start_time = time.time()
-                qdrant_results = []
-                current_qdrant_client = request.app.state.qdrant_client
-                current_embedding_model = request.app.state.embedding_model
+                    rag_search_start_time = time.time()
+                    qdrant_results = []
+                    current_qdrant_client = request.app.state.qdrant_client
+                    current_embedding_model = request.app.state.embedding_model
 
-                if current_qdrant_client and current_embedding_model:
-                    qdrant_results = await search_scenarios_in_qdrant_async(
-                        qdrant_client_instance=current_qdrant_client,
-                        embedding_model_instance=current_embedding_model,
-                        query_text=rag_query,
-                        top_k=5
+                    if current_qdrant_client and current_embedding_model:
+                        qdrant_results = await search_scenarios_in_qdrant_async(
+                            qdrant_client_instance=current_qdrant_client,
+                            embedding_model_instance=current_embedding_model,
+                            query_text=rag_query,
+                            top_k=5
+                        )
+                    else:
+                        print("Qdrant client or embedding model not initialized from app.state. Skipping Qdrant search in /chat/completions.")
+                        rag_span.update(level="WARNING", status_message="Qdrant not initialized, search skipped.")
+
+                    formatted_rag_results = []
+                    if qdrant_results:
+                        for hit in qdrant_results:
+                            context = hit.get("payload", {}).get("context", "").strip()
+                            guidelines = hit.get("payload", {}).get("responseGuidelines", "").strip()
+                            if context or guidelines:
+                                formatted_rag_results.append(f"- {context} {guidelines}".strip())
+
+                    rag_response_from_search = "\n".join(formatted_rag_results)
+                    if rag_response_from_search:
+                        rag_response_string = rag_response_from_search
+
+                    rag_search_speed = time.time() - rag_search_start_time
+                    print(f"Total RAG Time: {rag_search_speed:.3f} seconds")
+                    rag_span.update(
+                        output={"rag_results": rag_response_string},
+                        metadata={"duration_seconds": rag_search_speed}
                     )
-                else:
-                    print("Qdrant client or embedding model not initialized from app.state. Skipping Qdrant search in /chat/completions.")
-                    rag_span.update(level="WARNING", status_message="Qdrant not initialized, search skipped.")
-
-                formatted_rag_results = []
-                if qdrant_results:
-                    for hit in qdrant_results:
-                        context = hit.get("payload", {}).get("context", "").strip()
-                        guidelines = hit.get("payload", {}).get("responseGuidelines", "").strip()
-                        if context or guidelines:
-                            formatted_rag_results.append(f"- {context} {guidelines}".strip())
-
-                rag_response_string = "\n".join(formatted_rag_results)
-                if not rag_response_string:
-                    rag_response_string = "No relevant context found from knowledge base."
-
-                rag_search_speed = time.time() - rag_search_start_time
-                print(f"Total RAG Time: {rag_search_speed:.3f} seconds")
-                rag_span.update(
-                    output={"rag_results": rag_response_string},
-                    metadata={"duration_seconds": rag_search_speed}
-                )
-            # 'rag-search' span ends here.
+                # 'rag-search' span ends here.
+            else:
+                print(f"Skipping RAG search for assistant ID: {assistant_id}")
 
             payload['messages'] = system_prompt_inject(rag_response_string, payload.get('messages', []))
             payload['stream_options'] = {"include_usage": True}
@@ -247,4 +252,4 @@ async def chat_proxy(request: Request):
             metadata={"traceback": traceback.format_exc(), "error_type": type(e).__name__, "session_id": session_id_for_error}
         ).end() # IMPORTANT: Manually end this event as it's not a context manager
 
-        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
