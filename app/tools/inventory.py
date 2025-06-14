@@ -251,82 +251,65 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     "country_filter_id": country_filter_id,
                 }
 
-            def find_model():
+            def find_model_candidates():
                 """
-                Finds the best model match using a two-stage process:
+                Finds the best model match candidates using a multi-stage process.
                 1. Fuzzy match to find all models with a high similarity score.
                 2. Filter the high-score candidates by the target manufacturing year.
+                3. Sort the valid candidates by score (desc) and year range specificity (asc).
+                Returns a list of candidate model dicts.
                 """
                 vin_model_name = vin_data['model']
-                
-                # A high threshold to ensure we only consider very strong matches.
-                # This can be tuned if needed.
                 MINIMUM_SCORE_THRESHOLD = 85
-                
                 print(f"\nSearching for models similar to '{vin_model_name}' (Year: {target_year})...")
-                
+
                 # --- Stage 1: Find all high-similarity candidates ---
                 strong_candidates = []
                 for model in model_data['models']:
                     model_name_from_api = model['modelName']
-                    
-                    # fuzz.token_set_ratio is robust against word order and extra descriptors.
                     score = fuzz.token_set_ratio(vin_model_name, model_name_from_api)
-                    
                     if score >= MINIMUM_SCORE_THRESHOLD:
                         strong_candidates.append({'model': model, 'score': score})
                         print(f"  -> Found potential candidate: '{model_name_from_api}' (Score: {score})")
 
                 if not strong_candidates:
                     print("  ✗ No models found with a similarity score above the threshold.")
-                    # Fallback to body class matching
-                    print("\nTrying body class matching as fallback...")
-                    normalized_body_class = target_body_class.upper().replace('-', '').replace('_', '').replace(' ', '')
-                    
-                    for model in model_data['models']:
-                        normalized_api_model = model['modelName'].upper().replace('-', '').replace('_', '').replace(' ', '')
-                        if normalized_body_class in normalized_api_model:
-                            year_from = int(model['modelYearFrom'][:4])
-                            year_to_str = model.get('modelYearTo')
-                            year_to = datetime.datetime.now().year if year_to_str is None else int(year_to_str[:4])
-                            
-                            if year_from <= target_year <= year_to:
-                                print(f"  ✓ Found body class match: {model['modelName']} (ID: {model['modelId']})")
-                                return model['modelId']
                     return None
 
-                # --- Stage 2: Filter candidates by year and find the best one ---
+                # --- Stage 2: Filter candidates by year ---
                 print(f"\nFound {len(strong_candidates)} strong candidate(s). Filtering by year ({target_year})...")
-                
-                best_match = None
-                highest_score_in_year = 0
-
+                valid_candidates = []
                 for candidate in strong_candidates:
                     model_details = candidate['model']
-                    
                     year_from = int(model_details['modelYearFrom'][:4])
                     year_to_str = model_details.get('modelYearTo')
                     year_to = datetime.datetime.now().year if year_to_str is None else int(year_to_str[:4])
 
-                    # Check if the target year is within the model's production range
                     if year_from <= target_year <= year_to:
                         print(f"  ✓ Candidate '{model_details['modelName']}' has a matching year range ({year_from}-{year_to}).")
-                        # If this is the best-scoring model within the correct year, select it.
-                        if candidate['score'] > highest_score_in_year:
-                            highest_score_in_year = candidate['score']
-                            best_match = model_details
+                        range_size = year_to - year_from
+                        valid_candidates.append({
+                            'model': model_details,
+                            'score': candidate['score'],
+                            'year_range_size': range_size
+                        })
                     else:
                         print(f"  ✗ Candidate '{model_details['modelName']}' has an incorrect year range ({year_from}-{year_to}).")
 
-                if best_match:
-                    print(f"\n✓ Selected final model: '{best_match['modelName']}' (ID: {best_match['modelId']})")
-                    return best_match['modelId']
-                else:
+                if not valid_candidates:
                     print("\n✗ Found strong name matches, but none were in the correct year range.")
                     return None
 
-            potential_model_id = time_processing_step("Find Model", find_model)
-            if not potential_model_id:
+                # --- Stage 3: Sort by score and year range specificity ---
+                valid_candidates.sort(key=lambda x: (-x['score'], x['year_range_size']))
+                print(f"\nSorted valid candidates:")
+                for i, c in enumerate(valid_candidates):
+                    print(f"  {i+1}. '{c['model']['modelName']}' (Score: {c['score']}, Range: {c['year_range_size']} years)")
+                
+                return [c['model'] for c in valid_candidates]
+
+            potential_model_candidates = time_processing_step("Find Model Candidates", find_model_candidates)
+            if not potential_model_candidates:
                 final_result_message = "Could not find a matching model for the specified year and model/body type."
                 return {
                     "vin_searched": vin_number,
@@ -337,90 +320,96 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     "country_filter_id": country_filter_id,
                 }
 
-            print(f"\nStep 3: Getting all vehicle types for Model ID {potential_model_id}...")
-            types_endpoint = f"types/list-vehicles-types/{potential_model_id}/manufacturer-id/{manufacturer_id}/lang-id/4/country-filter-id/{country_filter_id}/type-id/1"
-            types_data = await time_api_call(client, types_endpoint)
-            if not types_data or 'modelTypes' not in types_data:
-                final_result_message = "Failed at Vehicle Types step or no variants found."
-                return {
-                    "vin_searched": vin_number,
-                    "result": final_result_message,
-                    "total_duration_seconds": round(time.time() - start_time, 3),
-                    "timing_details": timings,
-                    "vehicle_id": None,
-                    "country_filter_id": country_filter_id,
-                }
-
-            print(f"\nFound {types_data['countModelTypes']} variants. Filtering...")
-
-            def find_exact_variant():
-                for vehicle in types_data['modelTypes']:
-                    print(f"\nChecking variant: {vehicle['typeEngineName']}")
-                    
-                    # Check year range
-                    year_from = int(vehicle['constructionIntervalStart'][:4])
-                    year_to_str = vehicle['constructionIntervalEnd']
-                    year_to = datetime.datetime.now().year if year_to_str is None else int(year_to_str[:4])
-                    if not (year_from <= target_year <= year_to):
-                        print(f"  ✗ Year out of range ({year_from}-{year_to})")
-                        continue
-                    print(f"  ✓ Year in range: {year_from}-{year_to}")
-
-                    # Check cylinders
-                    if int(float(vehicle.get('numberOfCylinders', 0))) != target_cylinders:
-                        print(f"  ✗ Cylinder count mismatch: {vehicle.get('numberOfCylinders')} vs {target_cylinders}")
-                        continue
-                    print(f"  ✓ Cylinder count matches: {target_cylinders}")
-
-                    # Check displacement with a 2% tolerance to handle marketing vs technical values
-                    capacity_lt_from_api = float(vehicle.get('capacityLt', 0.0))
-                    DISP_TOLERANCE = 0.02  # 2% tolerance
-                    disp_lower_bound = target_displacement * (1 - DISP_TOLERANCE)
-                    disp_upper_bound = target_displacement * (1 + DISP_TOLERANCE)
-
-                    if not (disp_lower_bound <= capacity_lt_from_api <= disp_upper_bound):
-                        print(f"  ✗ Displacement mismatch: API has {capacity_lt_from_api}L, VIN target is {target_displacement}L")
-                        continue
-                    print(f"  ✓ Displacement matches: API has {capacity_lt_from_api}L, within tolerance of VIN's {target_displacement}L")
-
-                    # Check engine code (skip if VIN didn't provide engine code)
-                    if target_engine_code and target_engine_code not in vehicle.get('engineCodes', ''):
-                        print(f"  ✗ Engine code mismatch: {vehicle.get('engineCodes')} vs {target_engine_code}")
-                        continue
-                    if target_engine_code:
-                        print(f"  ✓ Engine code matches: {target_engine_code}")
-                    else:
-                        print(f"  ⚠ Engine code not available from VIN, skipping engine code check")
-                    
-                    # Check power (with 5% tolerance)
-                    power_ps = float(vehicle.get('powerPs', 0.0))
-                    if not (target_power_hp * 0.98 <= power_ps <= target_power_hp * 1.05):
-                        print(f"  ✗ Power mismatch: {power_ps}PS vs {target_power_hp}HP")
-                        continue
-                    print(f"  ✓ Power matches: {power_ps}PS ≈ {target_power_hp}HP")
-
-                    # Check drive type
-                    is_4wd = "4WD" in vehicle.get('typeEngineName', '').upper()
-                    if target_drive_type == '4x2' and is_4wd:
-                        print(f"  ✗ Drive type mismatch: 4WD vs 4x2")
-                        continue
-                    if target_drive_type == '4x4' and not is_4wd:
-                        print(f"  ✗ Drive type mismatch: 2WD vs 4x4")
-                        continue
-                    print(f"  ✓ Drive type matches: {target_drive_type}")
-
-                    print(f"\nSUCCESS: Found exact match!")
-                    print(f"Vehicle Name: {vehicle['typeEngineName']}")
-                    return vehicle['vehicleId']
+            # --- MODIFICATION: Iterate through model candidates ---
+            final_vehicle_id = None
+            for i, model_candidate in enumerate(potential_model_candidates):
+                model_id = model_candidate['modelId']
+                model_name = model_candidate['modelName']
+                print(f"\n{'='*60}")
+                print(f"Trying model candidate {i+1}/{len(potential_model_candidates)}: '{model_name}' (ID: {model_id})")
+                print(f"{'='*60}")
                 
-                return None
+                types_endpoint = f"types/list-vehicles-types/{model_id}/manufacturer-id/{manufacturer_id}/lang-id/4/country-filter-id/{country_filter_id}/type-id/1"
+                types_data = await time_api_call(client, types_endpoint)
 
-            final_vehicle_id = time_processing_step("Find Exact Variant", find_exact_variant)
+                if not types_data or 'modelTypes' not in types_data:
+                    print(f"  ✗ Failed to get vehicle types for model '{model_name}', trying next candidate...")
+                    continue
+                
+                print(f"\nFound {types_data['countModelTypes']} variants. Filtering...")
+
+                def find_exact_variant():
+                    for vehicle in types_data['modelTypes']:
+                        # This inner logic remains largely the same, checking year, cylinders, etc.
+                        print(f"\nChecking variant: {vehicle['typeEngineName']}")
+                        
+                        year_from = int(vehicle['constructionIntervalStart'][:4])
+                        year_to_str = vehicle.get('constructionIntervalEnd')
+                        year_to = datetime.datetime.now().year if year_to_str is None else int(year_to_str[:4])
+                        if not (year_from <= target_year <= year_to):
+                            print(f"  ✗ Year out of range ({year_from}-{year_to})")
+                            continue
+                        print(f"  ✓ Year in range: {year_from}-{year_to}")
+
+                        if int(float(vehicle.get('numberOfCylinders', 0))) != target_cylinders:
+                            print(f"  ✗ Cylinder count mismatch: {vehicle.get('numberOfCylinders')} vs {target_cylinders}")
+                            continue
+                        print(f"  ✓ Cylinder count matches: {target_cylinders}")
+
+                        capacity_lt_from_api = float(vehicle.get('capacityLt', 0.0))
+                        DISP_TOLERANCE = 0.02
+                        disp_lower_bound = target_displacement * (1 - DISP_TOLERANCE)
+                        disp_upper_bound = target_displacement * (1 + DISP_TOLERANCE)
+                        if not (disp_lower_bound <= capacity_lt_from_api <= disp_upper_bound):
+                            print(f"  ✗ Displacement mismatch: API has {capacity_lt_from_api}L, VIN target is {target_displacement}L")
+                            continue
+                        print(f"  ✓ Displacement matches: API has {capacity_lt_from_api}L, within tolerance of VIN's {target_displacement}L")
+
+                        if target_engine_code and target_engine_code not in vehicle.get('engineCodes', ''):
+                            print(f"  ✗ Engine code mismatch: {vehicle.get('engineCodes')} vs {target_engine_code}")
+                            continue
+                        if target_engine_code:
+                            print(f"  ✓ Engine code matches: {target_engine_code}")
+                        else:
+                            print(f"  ⚠ Engine code not available from VIN, skipping engine code check")
+                        
+                        power_ps = float(vehicle.get('powerPs', 0.0))
+                        if target_power_hp > 0 and not (target_power_hp * 0.95 <= power_ps <= target_power_hp * 1.05):
+                            print(f"  ✗ Power mismatch: {power_ps}PS vs {target_power_hp}HP")
+                            continue
+                        if target_power_hp > 0:
+                            print(f"  ✓ Power matches: {power_ps}PS ≈ {target_power_hp}HP")
+                        else:
+                             print(f"  ⚠ Power not available from VIN, skipping power check")
+
+                        type_engine_name = vehicle.get('typeEngineName', '').upper()
+                        is_4wd = any(term in type_engine_name for term in ['4WD', 'AWD', '4X4'])
+                        if target_drive_type == '4x2' and is_4wd:
+                            print(f"  ✗ Drive type mismatch: Found 4WD/AWD in '{vehicle.get('typeEngineName')}' vs VIN indicates 4x2")
+                            continue
+                        if target_drive_type == '4x4' and not is_4wd:
+                            print(f"  ✗ Drive type mismatch: No 4WD/AWD found in '{vehicle.get('typeEngineName')}' vs VIN indicates 4x4")
+                            continue
+                        print(f"  ✓ Drive type compatible: {target_drive_type}")
+
+                        print(f"\n🎉 SUCCESS: Found exact match!")
+                        print(f"Vehicle Name: {vehicle['typeEngineName']}")
+                        print(f"Model: {model_name}")
+                        print(f"Vehicle ID: {vehicle['vehicleId']}")
+                        return vehicle['vehicleId']
+                    
+                    return None
+
+                final_vehicle_id = time_processing_step("Find Exact Variant", find_exact_variant)
+                if final_vehicle_id:
+                    break # Found a match, stop trying other models
+                else:
+                    print(f"\n  ✗ No exact variants found for model '{model_name}', trying next candidate...")
             
             if final_vehicle_id:
                 final_result_message = f"Successfully found vehicle_id: '{final_vehicle_id}'"
             else:
-                final_result_message = "No exact vehicle match found after filtering."
+                final_result_message = "No exact vehicle match found after trying all model candidates."
 
         except Exception as e:
             final_result_message = f"An unexpected error occurred during the search: {str(e)}"
@@ -515,15 +504,39 @@ async def search_inventory_from_vin(
         # If user passed an explicit subset, we need to map the human names -> ids
         if search_categories:
             desired_ids: set[str] = set()
-            # naive fuzzy match (sync) to map search_categories to ids
-            for human in search_categories:
-                best_id, best_score = None, 0
-                for cid, info in categories_data["categories"].items():
-                    score = fuzz.token_set_ratio(human, info.get("text", ""))
-                    if score > best_score:
-                        best_id, best_score = cid, score
+            
+            # --- MODIFICATION: Recursive category search ---
+            def find_best_category_id(search_name: str) -> str | None:
+                """Recursively search the category tree for the best fuzzy match."""
+                best_match_info = {'id': None, 'score': 0}
+
+                def search_recursive(categories: dict):
+                    for cat_id, cat_info in categories.items():
+                        cat_name = cat_info.get("text", "")
+                        score = fuzz.token_set_ratio(search_name, cat_name)
+                        if score > best_match_info['score']:
+                            best_match_info['score'] = score
+                            best_match_info['id'] = cat_id
+                        
+                        if "children" in cat_info and cat_info["children"]:
+                            search_recursive(cat_info["children"])
+                
+                search_recursive(categories_data["categories"])
+                
+                MIN_CAT_SCORE = 70
+                if best_match_info['score'] >= MIN_CAT_SCORE:
+                    return best_match_info['id']
+                return None
+
+            for human_name in search_categories:
+                print(f"--> Searching for category ID for '{human_name}'...")
+                best_id = find_best_category_id(human_name)
                 if best_id:
+                    print(f"<-- Found best match category ID: {best_id}")
                     desired_ids.add(best_id)
+                else:
+                    print(f"<-- No suitable category found for '{human_name}'")
+
             category_ids = desired_ids
         else:
             category_ids = all_category_ids
