@@ -2,6 +2,7 @@ import httpx
 import datetime
 import time
 import json
+import re
 from pathlib import Path
 from thefuzz import fuzz
 import os
@@ -449,6 +450,12 @@ def _get_supabase_client():
         _supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     return _supabase
 
+def _normalize_article_no(s: str) -> str:
+    """Converts to uppercase and removes all non-alphanumeric characters."""
+    if not s:
+        return ""
+    return re.sub(r'[^A-Z0-9]', '', s.upper())
+
 async def search_inventory_from_vin(
     vin_number: str,
     api_key: str,
@@ -524,49 +531,72 @@ async def search_inventory_from_vin(
         supabase = _get_supabase_client()
         matches: list[dict] = []
 
+        # Fetch the entire inventory from Supabase ONCE at the start.
+        def _fetch_inventory():
+            print("--> Fetching all items from Supabase inventory...")
+            response = supabase.table("inventory").select("*").execute()
+            return response.data or []
+
+        inventory_items = await asyncio.to_thread(_fetch_inventory)
+        print(f"<-- Found {len(inventory_items)} items in Supabase.")
+        if inventory_items:
+            # Log the first item to help debug article number formats
+            print(f"    Example inventory item: {inventory_items[0]}")
+
+        print(f"--> Searching TecDoc for {len(category_ids)} category IDs: {list(category_ids)}")
         for category_id in category_ids:
             articles_endpoint = (
                 f"articles/list/vehicle-id/{vehicle_id}/product-group-id/{category_id}/"
                 f"manufacturer-id/5/lang-id/4/country-filter-id/{country_filter_id}/type-id/1"
             )
             try:
+                print(f"--> Getting articles for category_id: {category_id}")
                 articles_data = await call_tecdoc(articles_endpoint)
             except httpx.HTTPStatusError:
+                print(f"<-- Skipping category {category_id} due to HTTP error.")
                 continue
 
             if not articles_data or "articles" not in articles_data or articles_data.get("articles") is None:
+                print(f"<-- No articles found for category_id: {category_id}")
                 continue
 
-            # Build a quick lookup of compatible article numbers
-            compat = {a["articleNo"].upper(): a for a in articles_data["articles"]}
+            print(f"<-- Found {len(articles_data['articles'])} compatible articles for category {category_id}.")
+
+            # Build a quick lookup of compatible article numbers, using a normalized version as the key.
+            compat = {_normalize_article_no(a["articleNo"]): a for a in articles_data["articles"]}
             compat_numbers = set(compat.keys())
+            if compat_numbers:
+                print(f"    Compatible TecDoc article numbers (normalized sample): {list(compat_numbers)[:5]}")
 
-            # Pull inventory items from Supabase in a thread so we don't block.
-            def _fetch_inventory():
-                response = supabase.table("inventory").select("*").execute()
-                return response.data or []
-
-            inventory_items = await asyncio.to_thread(_fetch_inventory)
-
+            # No longer fetching inventory inside the loop. We use the list fetched earlier.
             for item in inventory_items:
-                inv_no = item.get("article_no", "").upper()
-                if not inv_no:
+                # Normalize the inventory article number for comparison
+                inv_no_raw = item.get("article_no", "")
+                inv_no_normalized = _normalize_article_no(inv_no_raw)
+                
+                if not inv_no_normalized:
                     continue
-                if inv_no in compat_numbers:
+                
+                # Log the comparison being made
+                # print(f"    Comparing Supabase item '{inv_no_raw}' (normalized: '{inv_no_normalized}') with TecDoc parts...")
+
+                if inv_no_normalized in compat_numbers:
+                    print(f"    ✓✓✓ Exact match found: Inventory='{inv_no_raw}' (normalized: {inv_no_normalized})")
                     matches.append({
                         "inventory_item": item,
-                        "compatible_article": compat[inv_no],
+                        "compatible_article": compat[inv_no_normalized],
                         "match_type": "exact",
                         "similarity": 100,
                     })
                 else:
-                    # fuzzy match
+                    # fuzzy match on normalized strings
                     best_article, best_score = None, 0
-                    for art_no, art in compat.items():
-                        score = fuzz.ratio(inv_no, art_no)
+                    for art_no_normalized, art in compat.items():
+                        score = fuzz.ratio(inv_no_normalized, art_no_normalized)
                         if score > best_score:
                             best_article, best_score = art, score
                     if best_score >= 85:
+                        print(f"    ✓✓✓ Fuzzy match found: Inventory='{inv_no_raw}' --- TecDoc='{best_article['articleNo']}' (Score: {best_score})")
                         matches.append({
                             "inventory_item": item,
                             "compatible_article": best_article,
