@@ -6,7 +6,7 @@ from pathlib import Path
 from thefuzz import fuzz
 import os
 import asyncio
-from supabase import create_client
+from supabase import create_client, Client
 
 # IMPORTANT: This entire file now uses asynchronous, non-blocking I/O (httpx).
 # It can be called directly from FastAPI async endpoints.
@@ -438,7 +438,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
 # Initialise the Supabase client once so we can re-use the HTTP keep-alive pool
-_supabase: "create_client" | None = None
+_supabase: Client | None = None
 
 def _get_supabase_client():
     """Return a singleton Supabase client (the library is synchronous)."""
