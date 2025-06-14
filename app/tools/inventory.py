@@ -4,6 +4,9 @@ import time
 import json
 from pathlib import Path
 from thefuzz import fuzz
+import os
+import asyncio
+from supabase import create_client
 
 # IMPORTANT: This entire file now uses asynchronous, non-blocking I/O (httpx).
 # It can be called directly from FastAPI async endpoints.
@@ -123,6 +126,7 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
     start_time = time.time()
     final_result_message = "Search could not be completed."
     final_vehicle_id = None
+    country_filter_id = None  # we expose this later so callers can reuse it
 
     async with httpx.AsyncClient(headers=HEADERS) as client:
         try:
@@ -140,7 +144,8 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     "result": final_result_message,
                     "total_duration_seconds": round(time.time() - start_time, 3),
                     "timing_details": timings,
-                    "vehicle_id": None
+                    "vehicle_id": None,
+                    "country_filter_id": country_filter_id,
                 }
             
             # Check if critical fields are present
@@ -154,7 +159,8 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     "result": final_result_message,
                     "total_duration_seconds": round(time.time() - start_time, 3),
                     "timing_details": timings,
-                    "vehicle_id": None
+                    "vehicle_id": None,
+                    "country_filter_id": country_filter_id,
                 }
             
             vin_data = decoded_response
@@ -207,7 +213,8 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     "result": final_result_message,
                     "total_duration_seconds": round(time.time() - start_time, 3),
                     "timing_details": timings,
-                    "vehicle_id": None
+                    "vehicle_id": None,
+                    "country_filter_id": country_filter_id,
                 }
 
             def find_manufacturer():
@@ -225,7 +232,8 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     "result": final_result_message,
                     "total_duration_seconds": round(time.time() - start_time, 3),
                     "timing_details": timings,
-                    "vehicle_id": None
+                    "vehicle_id": None,
+                    "country_filter_id": country_filter_id,
                 }
 
             print("\nStep 2: Getting Model ID...")
@@ -238,7 +246,8 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     "result": final_result_message,
                     "total_duration_seconds": round(time.time() - start_time, 3),
                     "timing_details": timings,
-                    "vehicle_id": None
+                    "vehicle_id": None,
+                    "country_filter_id": country_filter_id,
                 }
 
             def find_model():
@@ -323,7 +332,8 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     "result": final_result_message,
                     "total_duration_seconds": round(time.time() - start_time, 3),
                     "timing_details": timings,
-                    "vehicle_id": None
+                    "vehicle_id": None,
+                    "country_filter_id": country_filter_id,
                 }
 
             print(f"\nStep 3: Getting all vehicle types for Model ID {potential_model_id}...")
@@ -336,7 +346,8 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
                     "result": final_result_message,
                     "total_duration_seconds": round(time.time() - start_time, 3),
                     "timing_details": timings,
-                    "vehicle_id": None
+                    "vehicle_id": None,
+                    "country_filter_id": country_filter_id,
                 }
 
             print(f"\nFound {types_data['countModelTypes']} variants. Filtering...")
@@ -419,5 +430,148 @@ async def find_vehicle_id_from_vin(vin_number: str, api_key: str, host: str) -> 
         "result": final_result_message,
         "total_duration_seconds": round(total_duration, 3),
         "timing_details": timings,
-        "vehicle_id": final_vehicle_id
+        "vehicle_id": final_vehicle_id,
+        "country_filter_id": country_filter_id,
     }
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+
+# Initialise the Supabase client once so we can re-use the HTTP keep-alive pool
+_supabase: "create_client" | None = None
+
+def _get_supabase_client():
+    """Return a singleton Supabase client (the library is synchronous)."""
+    global _supabase
+    if _supabase is None:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            raise RuntimeError("SUPABASE_URL / SUPABASE_KEY environment variables not set")
+        _supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _supabase
+
+async def search_inventory_from_vin(
+    vin_number: str,
+    api_key: str,
+    host: str,
+    *,
+    search_categories: list[str] | None = None,
+) -> list[dict]:
+    """High-level helper that ties VIN->vehicle->TecDoc categories together and
+    finally queries Supabase inventory for compatible parts.
+
+    Returns a list with one entry per matching inventory item. Each entry is a
+    dict with:
+        inventory_item – the row from Supabase
+        compatible_article – the matching TecDoc article
+        match_type – 'exact' | 'fuzzy'
+        similarity – fuzz score (0-100)
+    """
+
+    # Step 1 – find the TecDoc vehicle id & country filter id
+    vehicle_info = await find_vehicle_id_from_vin(vin_number, api_key, host)
+    vehicle_id = vehicle_info.get("vehicle_id")
+    country_filter_id = vehicle_info.get("country_filter_id") or 223  # default USA
+    if not vehicle_id:
+        raise RuntimeError(f"Could not resolve VIN {vin_number} to a vehicle id: {vehicle_info.get('result')}")
+
+    # Convenience: if caller did not specify categories, fetch all available ones
+    # from TecDoc and use every leaf category.
+    async with httpx.AsyncClient(headers={
+        "x-rapidapi-host": host,
+        "x-rapidapi-key": api_key,
+    }) as client:
+        async def call_tecdoc(path: str):
+            url = f"https://{host}/{path}"
+            r = await client.get(url, timeout=10)
+            r.raise_for_status()
+            return r.json()
+
+        # Fetch category tree
+        categories_endpoint = (
+            f"category/category-products-groups-variant-3/{vehicle_id}/manufacturer-id/5/"
+            f"lang-id/4/country-filter-id/{country_filter_id}/type-id/1"
+        )
+        categories_data = await call_tecdoc(categories_endpoint)
+        if not categories_data or "categories" not in categories_data:
+            raise RuntimeError("TecDoc categories lookup failed")
+
+        # Helper to flatten nested category dict {id: {text, children}}
+        def _collect_cat_ids(cat_dict: dict, acc: set[str]):
+            for cid, info in cat_dict.items():
+                acc.add(cid)
+                if info.get("children"):
+                    _collect_cat_ids(info["children"], acc)
+
+        all_category_ids: set[str] = set()
+        _collect_cat_ids(categories_data["categories"], all_category_ids)
+
+        # If user passed an explicit subset, we need to map the human names -> ids
+        if search_categories:
+            desired_ids: set[str] = set()
+            # naive fuzzy match (sync) to map search_categories to ids
+            for human in search_categories:
+                best_id, best_score = None, 0
+                for cid, info in categories_data["categories"].items():
+                    score = fuzz.token_set_ratio(human, info.get("text", ""))
+                    if score > best_score:
+                        best_id, best_score = cid, score
+                if best_id:
+                    desired_ids.add(best_id)
+            category_ids = desired_ids
+        else:
+            category_ids = all_category_ids
+
+        supabase = _get_supabase_client()
+        matches: list[dict] = []
+
+        for category_id in category_ids:
+            articles_endpoint = (
+                f"articles/list/vehicle-id/{vehicle_id}/product-group-id/{category_id}/"
+                f"manufacturer-id/5/lang-id/4/country-filter-id/{country_filter_id}/type-id/1"
+            )
+            try:
+                articles_data = await call_tecdoc(articles_endpoint)
+            except httpx.HTTPStatusError:
+                continue
+
+            if not articles_data or "articles" not in articles_data:
+                continue
+
+            # Build a quick lookup of compatible article numbers
+            compat = {a["articleNo"].upper(): a for a in articles_data["articles"]}
+            compat_numbers = set(compat.keys())
+
+            # Pull inventory items from Supabase in a thread so we don't block.
+            def _fetch_inventory():
+                response = supabase.table("inventory").select("*").execute()
+                return response.data or []
+
+            inventory_items = await asyncio.to_thread(_fetch_inventory)
+
+            for item in inventory_items:
+                inv_no = item.get("article_no", "").upper()
+                if not inv_no:
+                    continue
+                if inv_no in compat_numbers:
+                    matches.append({
+                        "inventory_item": item,
+                        "compatible_article": compat[inv_no],
+                        "match_type": "exact",
+                        "similarity": 100,
+                    })
+                else:
+                    # fuzzy match
+                    best_article, best_score = None, 0
+                    for art_no, art in compat.items():
+                        score = fuzz.ratio(inv_no, art_no)
+                        if score > best_score:
+                            best_article, best_score = art, score
+                    if best_score >= 85:
+                        matches.append({
+                            "inventory_item": item,
+                            "compatible_article": best_article,
+                            "match_type": "fuzzy",
+                            "similarity": best_score,
+                        })
+
+        return matches

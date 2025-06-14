@@ -13,4 +13,9 @@ class ScenarioHit(BaseModel):
 
 # Pydantic model for VIN search endpoint
 class VinSearchRequest(BaseModel):
-    vin: str = Field(..., description="The 17-character Vehicle Identification Number.", min_length=17, max_length=17) 
+    vin: str = Field(..., description="The 17-character Vehicle Identification Number.", min_length=17, max_length=17)
+
+# Pydantic model for inventory search via VIN
+class InventorySearchRequest(BaseModel):
+    vin: str = Field(..., description="The 17-character Vehicle Identification Number.", min_length=17, max_length=17)
+    search_categories: Optional[List[str]] = Field(None, description="A list of part categories to search for, e.g., 'Air Filter'. If omitted, all categories will be searched.") 

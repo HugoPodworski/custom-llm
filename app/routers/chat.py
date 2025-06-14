@@ -208,9 +208,14 @@ async def chat_proxy(request: Request):
 
                     # Update the overall trace with error information
                     root_span.update_trace(
-                        level="ERROR",
                         status_message=f"Overall request failed due to stream error: {ex_stream}",
                         output={"partial_response": partial_response_text, "error": str(ex_stream)}
+                    )
+
+                    # Set error level on the current span since level is not supported on traces
+                    root_span.update(
+                        level="ERROR",
+                        status_message=f"Stream processing error: {ex_stream}"
                     )
 
                     # Cost calculation on error...
@@ -252,4 +257,4 @@ async def chat_proxy(request: Request):
             metadata={"traceback": traceback.format_exc(), "error_type": type(e).__name__, "session_id": session_id_for_error}
         ).end() # IMPORTANT: Manually end this event as it's not a context manager
 
-        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}") 
