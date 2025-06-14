@@ -534,7 +534,7 @@ async def search_inventory_from_vin(
             except httpx.HTTPStatusError:
                 continue
 
-            if not articles_data or "articles" not in articles_data:
+            if not articles_data or "articles" not in articles_data or articles_data.get("articles") is None:
                 continue
 
             # Build a quick lookup of compatible article numbers
